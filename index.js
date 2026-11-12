@@ -178,10 +178,29 @@ client.on(Events.GuildAuditLogEntryCreate, async (entry, guild) => {
     if (guild.id !== GUILD_ID) return;
     const executorId = entry.executorId || entry.executor?.id;
     if (!executorId) return;
+
+    // Human activity only: ignore actions performed by bot accounts.
+    if (entry.executor?.bot) return;
     const member = await guild.members.fetch(executorId).catch(() => null);
-    const isMod = isModerator(member);
+    if (member?.user?.bot) return;
+
     const changes = entry.changes || [];
     const targetId = entry.targetId || null;
+
+    // Ignore member-related audit entries when the affected account is a bot.
+    const memberTargetActions = [
+      AuditLogEvent.MemberBanAdd,
+      AuditLogEvent.MemberBanRemove,
+      AuditLogEvent.MemberKick,
+      AuditLogEvent.MemberUpdate,
+      AuditLogEvent.MemberRoleUpdate
+    ];
+    if (targetId && memberTargetActions.includes(entry.action)) {
+      const targetMember = await guild.members.fetch(targetId).catch(() => null);
+      if (targetMember?.user?.bot) return;
+    }
+
+    const isMod = isModerator(member);
     const target = targetId
       ? guild.channels.cache.get(targetId)?.name
         || guild.roles.cache.get(targetId)?.name
@@ -232,6 +251,8 @@ client.on(Events.GuildMemberRemove, async member => {
 client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
   try {
     if (newMember.guild.id !== GUILD_ID) return;
+    // Do not log role or nickname changes on bot accounts.
+    if (newMember.user?.bot) return;
     const before = oldMember.roles.cache.map(r => r.id);
     const after = newMember.roles.cache.map(r => r.id);
     const added = after.filter(id => !before.includes(id));
