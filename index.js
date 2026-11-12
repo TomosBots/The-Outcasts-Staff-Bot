@@ -189,7 +189,7 @@ client.on(Events.GuildAuditLogEntryCreate, async (entry, guild) => {
         || null
       : null;
     const title = `📋 ${actionName(entry.action, changes)}`;
-    const targetLine = target ? `**Affected item:** ${target}\\n` : "";
+    const targetLine = target ? `**Affected item:** ${target}\n` : "";
     await logAction(guild, title,
       `${targetLine}A Discord audit-log action was recorded.`, {
         executorId, targetId, reason: entry.reason,
