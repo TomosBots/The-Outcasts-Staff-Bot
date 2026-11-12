@@ -34,6 +34,14 @@ function writeJson(file, value) {
   fs.writeFileSync(tmp, JSON.stringify(value, null, 2));
   fs.renameSync(tmp, file);
 }
+function loadData() {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  config = readJson(CONFIG_FILE, {});
+  stats = readJson(STATS_FILE, {
+    day: new Date().toISOString().slice(0, 10),
+    actions: {}
+  });
+}
 function safe(value, max = 900) {
   const text = String(value ?? "Not provided").replace(/```/g, "'''");
   return text.length > max ? `${text.slice(0, max - 3)}...` : text;
