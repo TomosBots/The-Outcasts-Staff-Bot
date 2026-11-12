@@ -23,7 +23,7 @@ const client = new Client({
 });
 
 let config = {};
-let stats = { day: new Date().toISOString().slice(0, 10), actions: {} };
+let stats = { day: ukDate(), actions: {} };
 
 function readJson(file, fallback) {
   try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return fallback; }
@@ -38,10 +38,16 @@ function loadData() {
   fs.mkdirSync(DATA_DIR, { recursive: true });
   config = readJson(CONFIG_FILE, {});
   stats = readJson(STATS_FILE, {
-    day: new Date().toISOString().slice(0, 10),
+    day: ukDate(),
     actions: {}
   });
 }
+function ukDate() {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Europe/London", year: "numeric", month: "2-digit", day: "2-digit"
+  }).format(new Date());
+}
+
 function safe(value, max = 900) {
   const text = String(value ?? "Not provided").replace(/```/g, "'''");
   return text.length > max ? `${text.slice(0, max - 3)}...` : text;
@@ -75,29 +81,89 @@ async function logAction(guild, title, description, {
   if (moderatorAction) await sendLog(guild, config.channels?.moderation, e);
 
   if (executorId && moderatorAction) {
-    const today = new Date().toISOString().slice(0, 10);
+    const today = ukDate();
     if (stats.day !== today) stats = { day: today, actions: {} };
     const key = `${executorId}:${actionKey}`;
     stats.actions[key] = (stats.actions[key] || 0) + 1;
     writeJson(STATS_FILE, stats);
   }
 }
-function actionName(action) {
+function actionName(action, changes = []) {
   const map = new Map([
-    [AuditLogEvent.MemberBanAdd, "Member banned"], [AuditLogEvent.MemberBanRemove, "Member unbanned"],
-    [AuditLogEvent.MemberKick, "Member kicked"], [AuditLogEvent.MemberUpdate, "Member updated / timeout or nickname"],
-    [AuditLogEvent.MemberRoleUpdate, "Member roles changed"], [AuditLogEvent.MessageDelete, "Message deleted"],
-    [AuditLogEvent.MessageBulkDelete, "Messages bulk deleted"], [AuditLogEvent.ChannelCreate, "Channel created"],
-    [AuditLogEvent.ChannelDelete, "Channel deleted"], [AuditLogEvent.ChannelUpdate, "Channel updated"],
-    [AuditLogEvent.RoleCreate, "Role created"], [AuditLogEvent.RoleDelete, "Role deleted"],
-    [AuditLogEvent.RoleUpdate, "Role updated"], [AuditLogEvent.WebhookCreate, "Webhook created"],
-    [AuditLogEvent.WebhookDelete, "Webhook deleted"], [AuditLogEvent.WebhookUpdate, "Webhook updated"],
-    [AuditLogEvent.ThreadCreate, "Thread created"], [AuditLogEvent.ThreadDelete, "Thread deleted"],
-    [AuditLogEvent.ThreadUpdate, "Thread updated"], [AuditLogEvent.InviteCreate, "Invite created"],
+    [AuditLogEvent.GuildUpdate, "Server settings updated"],
+    [AuditLogEvent.MemberBanAdd, "Member banned"],
+    [AuditLogEvent.MemberBanRemove, "Member unbanned"],
+    [AuditLogEvent.MemberKick, "Member kicked"],
+    [AuditLogEvent.MemberUpdate, "Member updated"],
+    [AuditLogEvent.MemberRoleUpdate, "Member roles changed"],
+    [AuditLogEvent.MessageDelete, "Message deleted"],
+    [AuditLogEvent.MessageBulkDelete, "Messages bulk deleted"],
+    [AuditLogEvent.ChannelCreate, "Channel created"],
+    [AuditLogEvent.ChannelDelete, "Channel deleted"],
+    [AuditLogEvent.ChannelUpdate, "Channel updated"],
+    [AuditLogEvent.ChannelOverwriteCreate, "Channel permission overwrite created"],
+    [AuditLogEvent.ChannelOverwriteUpdate, "Channel permissions changed"],
+    [AuditLogEvent.ChannelOverwriteDelete, "Channel permission overwrite deleted"],
+    [AuditLogEvent.RoleCreate, "Role created"],
+    [AuditLogEvent.RoleDelete, "Role deleted"],
+    [AuditLogEvent.RoleUpdate, "Role updated"],
+    [AuditLogEvent.WebhookCreate, "Webhook created"],
+    [AuditLogEvent.WebhookDelete, "Webhook deleted"],
+    [AuditLogEvent.WebhookUpdate, "Webhook updated"],
+    [AuditLogEvent.ThreadCreate, "Thread created"],
+    [AuditLogEvent.ThreadDelete, "Thread deleted"],
+    [AuditLogEvent.ThreadUpdate, "Thread updated"],
+    [AuditLogEvent.InviteCreate, "Invite created"],
     [AuditLogEvent.InviteDelete, "Invite deleted"]
   ]);
-  return map.get(action) || `Discord audit action ${action}`;
+
+  if (action === AuditLogEvent.ChannelUpdate) {
+    const nameChange = changes.find(c => c.key === "name");
+    if (nameChange) return "Channel renamed";
+  }
+  return map.get(action) || `Other Discord audit action (${action})`;
 }
+
+function readableValue(value) {
+  if (value === null || value === undefined) return "none";
+  if (typeof value === "boolean") return value ? "Enabled" : "Disabled";
+  if (Array.isArray(value)) return value.length ? value.join(", ") : "none";
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+
+function describeAuditChanges(entry) {
+  const changes = entry.changes || [];
+  if (!changes.length) return `Audit entry ID: ${entry.id}`;
+
+  const labels = {
+    name: "Name",
+    topic: "Topic",
+    nsfw: "Age restricted",
+    rate_limit_per_user: "Slowmode (seconds)",
+    bitrate: "Bitrate",
+    user_limit: "User limit",
+    parent_id: "Category ID",
+    position: "Position",
+    permission_overwrites: "Permission overwrites",
+    allow: "Permissions allowed",
+    deny: "Permissions denied",
+    color: "Role colour",
+    hoist: "Displayed separately",
+    mentionable: "Mentionable",
+    permissions: "Role permissions",
+    nick: "Nickname",
+    communication_disabled_until: "Timeout until",
+    mute: "Server muted",
+    deaf: "Server deafened"
+  };
+
+  return changes.map(change => {
+    const label = labels[change.key] || change.key.replace(/_/g, " ");
+    return `**${label}:** ${readableValue(change.old)} → ${readableValue(change.new)}`;
+  }).join("\n");
+}
+
 function actionKey(action) {
   if ([AuditLogEvent.MemberBanAdd, AuditLogEvent.MemberBanRemove].includes(action)) return "ban";
   if (action === AuditLogEvent.MemberKick) return "kick";
@@ -114,13 +180,20 @@ client.on(Events.GuildAuditLogEntryCreate, async (entry, guild) => {
     if (!executorId) return;
     const member = await guild.members.fetch(executorId).catch(() => null);
     const isMod = isModerator(member);
-    const changes = entry.changes?.map(c =>
-      `${c.key}: ${JSON.stringify(c.old ?? "—")} → ${JSON.stringify(c.new ?? "—")}`
-    ).join("\n");
-    await logAction(guild, `📋 ${actionName(entry.action)}`,
-      "A Discord audit-log action was recorded.", {
-        executorId, targetId: entry.targetId || null, reason: entry.reason,
-        extra: changes || `Audit entry ID: ${entry.id}`,
+    const changes = entry.changes || [];
+    const targetId = entry.targetId || null;
+    const target = targetId
+      ? guild.channels.cache.get(targetId)?.name
+        || guild.roles.cache.get(targetId)?.name
+        || guild.members.cache.get(targetId)?.user?.tag
+        || null
+      : null;
+    const title = `📋 ${actionName(entry.action, changes)}`;
+    const targetLine = target ? `**Affected item:** ${target}\\n` : "";
+    await logAction(guild, title,
+      `${targetLine}A Discord audit-log action was recorded.`, {
+        executorId, targetId, reason: entry.reason,
+        extra: describeAuditChanges(entry),
         moderatorAction: isMod, actionKey: actionKey(entry.action),
         color: isMod ? 0xE67E22 : 0xC9A44C
       });
@@ -266,7 +339,7 @@ async function dailySummary() {
   summary.addFields({ name: "Date", value: stats.day || "Today" });
   await sendLog(guild, config.channels.moderation, summary);
   await sendLog(guild, config.channels.leadership, summary);
-  stats = { day: new Date().toISOString().slice(0, 10), actions: {} };
+  stats = { day: ukDate(), actions: {} };
   writeJson(STATS_FILE, stats);
 }
 
