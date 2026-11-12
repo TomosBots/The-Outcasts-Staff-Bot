@@ -1,0 +1,13 @@
+{
+  "name": "outcasts-staff-monitor",
+  "version": "1.0.0",
+  "description": "Private staff activity and moderation monitoring bot for The Outcasts",
+  "main": "index.js",
+  "scripts": { "start": "node index.js" },
+  "engines": { "node": ">=18.17.0" },
+  "dependencies": {
+    "discord.js": "^14.19.3",
+    "dotenv": "^16.4.7",
+    "node-cron": "^3.0.3"
+  }
+}
