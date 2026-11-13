@@ -517,8 +517,25 @@
       if (interaction.isModalSubmit() && interaction.customId.startsWith("support:form:")) {
         const category = interaction.customId.split(":")[2];
         const details = interaction.fields.getTextInputValue("details");
-        try { return await createSupportTicket(interaction, category, interaction.fields.getTextInputValue("ign") || "Not provided", interaction.fields.getTextInputValue("tag") || "Not provided", details); }
-        catch (error) { console.error("[Staff Monitor] Ticket creation failed:", error); return interaction.reply({ content: "❌ I couldn't create your ticket. Please contact a staff member or try again shortly.", ephemeral: true }); }
+        // Discord requires an acknowledgement within 3 seconds. Fetching members,
+        // roles and creating a channel can take longer, so defer before any API work.
+        await interaction.deferReply({ ephemeral: true });
+        try {
+          return await createSupportTicket(
+            interaction,
+            category,
+            interaction.fields.getTextInputValue("ign") || "Not provided",
+            interaction.fields.getTextInputValue("tag") || "Not provided",
+            details
+          );
+        } catch (error) {
+          console.error("[Staff Monitor] Ticket creation failed:", error);
+          const message = "❌ I couldn't finish creating your ticket. Please contact a staff member or try again shortly.";
+          if (interaction.deferred || interaction.replied) {
+            return interaction.editReply({ content: message }).catch(console.error);
+          }
+          return interaction.reply({ content: message, ephemeral: true }).catch(console.error);
+        }
       }
 
       if (interaction.isButton() && interaction.customId.startsWith("support:" ) && ["claim", "close", "reopen"].includes(interaction.customId.split(":")[1])) {
