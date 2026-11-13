@@ -380,8 +380,8 @@
     function ticketControls(closed = false) {
       const row = new ActionRowBuilder();
       if (!closed) row.addComponents(
-        new ButtonBuilder().setCustomId("support:claim").setLabel("Claim").setEmoji("🙋").setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId("support:close").setLabel("Close ticket").setEmoji("🔒").setStyle(ButtonStyle.Danger)
+        new ButtonBuilder().setCustomId("support:claim").setLabel("Claim Ticket").setEmoji("🙋").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("support:close").setLabel("Close & Archive").setEmoji("🔒").setStyle(ButtonStyle.Danger)
       );
       else row.addComponents(new ButtonBuilder().setCustomId("support:reopen").setLabel("Reopen ticket").setEmoji("🔓").setStyle(ButtonStyle.Success));
       return [row];
@@ -443,12 +443,29 @@
       });
       tickets.records[channel.id] = { number, userId: interaction.user.id, category, status: "open", createdAt: new Date().toISOString(), claimedBy: null };
       saveTickets();
-      const ticketEmbed = embed(`🎫 Support Ticket #${number}`,
-        `**Category:** ${category.replace(/_/g, " ")}\n**Member:** <@${interaction.user.id}>\n**IGN:** ${safe(ign, 100)}\n**In-game tag:** ${safe(tag, 100)}\n\n**Description**\n${safe(details, 3500)}\n\nPlease keep all discussion in this ticket. Staff will respond as soon as possible.`, 0xC9A44C);
-      ticketEmbed.addFields({ name: "Privacy", value: isStaffComplaint ? "Senior leadership only" : "Support and moderation team" });
+      const ticketEmbed = embed(
+        `🎫  THE OUTCASTS  |  SUPPORT #${String(number).padStart(4, "0")}`,
+        [
+          "Thank you for contacting The Outcasts support team.",
+          "",
+          "**Issue details**",
+          safe(details, 3500),
+          "",
+          "🔒 Please keep all discussion inside this private ticket. A staff member will respond as soon as possible."
+        ].join("\n"),
+        0xC9A44C
+      );
+      ticketEmbed.addFields(
+        { name: "📂 Category", value: category.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase()), inline: true },
+        { name: "👤 Member", value: `<@${interaction.user.id}>`, inline: true },
+        { name: "🎮 In-game name", value: safe(ign, 100), inline: true },
+        { name: "🏷️ In-game tag", value: safe(tag, 100), inline: true },
+        { name: "🔐 Privacy", value: isStaffComplaint ? "Ares, Artemis and senior leadership only" : "Support and moderation team", inline: false }
+      );
+      ticketEmbed.setFooter({ text: "THE OUTCASTS  •  PRIVATE SUPPORT" });
       const staffRoleIds = supportStaffIds(category).filter(id => overwriteTargets.has(id));
       await channel.send({
-        content: `<@${interaction.user.id}> ${staffRoleIds.map(id => `<@&${id}>`).join(" ")}`,
+        content: `🎟️ <@${interaction.user.id}> ${staffRoleIds.map(id => `<@&${id}>`).join(" ")}`,
         embeds: [ticketEmbed],
         components: ticketControls(),
         allowedMentions: { users: [interaction.user.id], roles: staffRoleIds }
