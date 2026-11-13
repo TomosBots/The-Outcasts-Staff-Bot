@@ -265,13 +265,35 @@
         const added = after.filter(id => !before.includes(id));
         const removed = before.filter(id => !after.includes(id));
         if (!added.length && !removed.length && oldMember.nickname === newMember.nickname) return;
+
+        // GuildMemberUpdate does not identify the actor. Match the recent audit entry
+        // so changes made by bot accounts are excluded from the human activity log.
+        const cutoff = Date.now() - 15000;
+        const auditTypes = [];
+        if (added.length || removed.length) auditTypes.push(AuditLogEvent.MemberRoleUpdate);
+        if (oldMember.nickname !== newMember.nickname) auditTypes.push(AuditLogEvent.MemberUpdate);
+
+        for (const auditType of auditTypes) {
+          const audit = await newMember.guild.fetchAuditLogs({ type: auditType, limit: 8 }).catch(() => null);
+          const matchingEntry = audit?.entries?.find(entry =>
+            entry.targetId === newMember.id && entry.createdTimestamp >= cutoff
+          );
+          if (matchingEntry) {
+            if (matchingEntry.executor?.bot) return;
+            if (matchingEntry.executorId) {
+              const executorMember = await newMember.guild.members.fetch(matchingEntry.executorId).catch(() => null);
+              if (executorMember?.user?.bot) return;
+            }
+          }
+        }
+
         const detail = [
           added.length ? `Roles added: ${added.map(id => `<@&${id}>`).join(", ")}` : "",
           removed.length ? `Roles removed: ${removed.map(id => `<@&${id}>`).join(", ")}` : "",
           oldMember.nickname !== newMember.nickname ? `Nickname: ${oldMember.nickname || "none"} → ${newMember.nickname || "none"}` : ""
-        ].filter(Boolean).join("\n");
+        ].filter(Boolean).join("\\n");
         await logAction(newMember.guild, "👤 Member roles or nickname changed",
-          "A member update was detected. The actor is identified if Discord provides a matching audit-log entry.",
+          "A human member update was detected. Bot-initiated changes are excluded.",
           { targetId: newMember.id, extra: detail });
       } catch (error) { console.error("[Staff Monitor] Member update:", error); }
     });
