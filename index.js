@@ -600,9 +600,14 @@
               console.warn(`[Staff Monitor] No close-log channel configured for ${record.category}.`);
             }
 
-            // Mark closed and lock the ticket only after the transcript/log step succeeds.
+            // Close the ticket by removing the original member's access entirely.
+            // Staff retain access so they can review the conversation and transcript.
             await interaction.channel.permissionOverwrites.edit(record.userId, {
-              SendMessages: false, ViewChannel: true, ReadMessageHistory: true
+              ViewChannel: false,
+              SendMessages: false,
+              ReadMessageHistory: false,
+              AttachFiles: false,
+              EmbedLinks: false
             });
             await interaction.channel.permissionOverwrites.edit(interaction.guild.roles.everyone.id, {
               ViewChannel: false
