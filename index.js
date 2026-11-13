@@ -395,15 +395,40 @@
       const guild = interaction.guild;
       const number = tickets.nextNumber++;
       const isStaffComplaint = category === "staff_complaint";
-      const slug = category.replace(/_/g, "-");
       const channelName = `support-${String(number).padStart(4, "0")}-${interaction.user.username.toLowerCase().replace(/[^a-z0-9-]/g, "").slice(0, 12) || "member"}`;
-      const overwrites = [
-        { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
-        { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.AttachFiles, PermissionFlagsBits.EmbedLinks] },
-        { id: client.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.ManageChannels, PermissionFlagsBits.AttachFiles, PermissionFlagsBits.EmbedLinks] },
-        ...OWNER_IDS.map(id => ({ id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.AttachFiles, PermissionFlagsBits.EmbedLinks] })),
-        ...supportStaffIds(category).map(id => ({ id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.AttachFiles, PermissionFlagsBits.EmbedLinks] }))
+      const viewPerms = [
+        PermissionFlagsBits.ViewChannel,
+        PermissionFlagsBits.SendMessages,
+        PermissionFlagsBits.ReadMessageHistory,
+        PermissionFlagsBits.AttachFiles,
+        PermissionFlagsBits.EmbedLinks
       ];
+
+      // Resolve every overwrite target to a real Discord.js Role/GuildMember.
+      // Passing uncached snowflake strings here can cause InvalidType in discord.js.
+      const overwrites = [
+        { id: guild.roles.everyone, deny: [PermissionFlagsBits.ViewChannel] },
+        { id: await guild.members.fetch(interaction.user.id), allow: viewPerms },
+        { id: await guild.members.fetchMe(), allow: [...viewPerms, PermissionFlagsBits.ManageChannels] }
+      ];
+      const overwriteTargets = new Map();
+
+      for (const ownerId of OWNER_IDS) {
+        const member = await guild.members.fetch(ownerId).catch(() => null);
+        if (member) overwriteTargets.set(member.id, member);
+        else console.warn(`[Staff Monitor] Owner ${ownerId} is not a member of guild ${guild.id}; omitted from ticket overwrites.`);
+      }
+
+      for (const roleId of supportStaffIds(category)) {
+        const role = await guild.roles.fetch(roleId).catch(() => null);
+        if (role) overwriteTargets.set(role.id, role);
+        else console.warn(`[Staff Monitor] Support role ${roleId} could not be fetched; omitted from ticket overwrites.`);
+      }
+
+      for (const target of overwriteTargets.values()) {
+        overwrites.push({ id: target, allow: viewPerms });
+      }
+
       const channel = await guild.channels.create({
         name: channelName, type: ChannelType.GuildText,
         topic: `OUTCASTS_SUPPORT|${number}|${interaction.user.id}|${category}|open`,
@@ -413,15 +438,20 @@
       tickets.records[channel.id] = { number, userId: interaction.user.id, category, status: "open", createdAt: new Date().toISOString(), claimedBy: null };
       saveTickets();
       const ticketEmbed = embed(`🎫 Support Ticket #${number}`,
-        `**Category:** ${category.replace(/_/g, " ")}\n**Member:** <@${interaction.user.id}>\n**IGN:** ${safe(ign, 100)}\n**In-game tag:** ${safe(tag, 100)}\n\n**Description**\n${safe(details, 3500)}\n\nPlease keep all discussion in this ticket. Staff will respond as soon as possible.`, 0xC9A44C);
+        `**Category:** ${category.replace(/_/g, " ")}\\n**Member:** <@${interaction.user.id}>\\n**IGN:** ${safe(ign, 100)}\\n**In-game tag:** ${safe(tag, 100)}\\n\\n**Description**\\n${safe(details, 3500)}\\n\\nPlease keep all discussion in this ticket. Staff will respond as soon as possible.`, 0xC9A44C);
       ticketEmbed.addFields({ name: "Privacy", value: isStaffComplaint ? "Senior leadership only" : "Support and moderation team" });
-      await channel.send({ content: `<@${interaction.user.id}> ${supportStaffIds(category).map(id => `<@&${id}>`).join(" ")}`, embeds: [ticketEmbed], components: ticketControls(), allowedMentions: { users: [interaction.user.id], roles: supportStaffIds(category) } });
+      const staffRoleIds = supportStaffIds(category).filter(id => overwriteTargets.has(id));
+      await channel.send({
+        content: `<@${interaction.user.id}> ${staffRoleIds.map(id => `<@&${id}>`).join(" ")}`,
+        embeds: [ticketEmbed],
+        components: ticketControls(),
+        allowedMentions: { users: [interaction.user.id], roles: staffRoleIds }
+      });
       await interaction.reply({ content: `✅ Your private support ticket has been created: ${channel}`, ephemeral: true });
-      const log = embed(`🎫 New support ticket #${number}`, `**Category:** ${category.replace(/_/g, " ")}\n**Member:** <@${interaction.user.id}>\n**Ticket:** ${channel}`, 0xC9A44C);
+      const log = embed(`🎫 New support ticket #${number}`, `**Category:** ${category.replace(/_/g, " ")}\\n**Member:** <@${interaction.user.id}>\\n**Ticket:** ${channel}`, 0xC9A44C);
       if (isStaffComplaint) await sendLog(guild, config.channels?.leadership, log);
       else { await sendLog(guild, config.channels?.moderation, log); await sendLog(guild, config.channels?.leadership, log); }
     }
-
 
     async function setupChannel(guild, name, allowedIds) {
       const overwrites = [
