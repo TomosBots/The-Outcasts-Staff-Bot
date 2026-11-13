@@ -198,6 +198,9 @@
     client.on(Events.GuildAuditLogEntryCreate, async (entry, guild) => {
       try {
         if (guild.id !== GUILD_ID) return;
+        // Do not send leadership notifications for routine member role or nickname changes.
+        if ([AuditLogEvent.MemberRoleUpdate, AuditLogEvent.MemberUpdate].includes(entry.action)) return;
+
         const executorId = entry.executorId || entry.executor?.id;
         if (!executorId) return;
 
@@ -257,46 +260,7 @@
         `${member.user.tag} left the server. A matching audit entry may identify a kick or ban.`,
         { targetId: member.id });
     });
-    client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
-      try {
-        if (newMember.guild.id !== GUILD_ID || newMember.user.bot) return;
-        const before = oldMember.roles.cache.map(r => r.id);
-        const after = newMember.roles.cache.map(r => r.id);
-        const added = after.filter(id => !before.includes(id));
-        const removed = before.filter(id => !after.includes(id));
-        if (!added.length && !removed.length && oldMember.nickname === newMember.nickname) return;
-
-        // GuildMemberUpdate does not identify the actor. Match the recent audit entry
-        // so changes made by bot accounts are excluded from the human activity log.
-        const cutoff = Date.now() - 15000;
-        const auditTypes = [];
-        if (added.length || removed.length) auditTypes.push(AuditLogEvent.MemberRoleUpdate);
-        if (oldMember.nickname !== newMember.nickname) auditTypes.push(AuditLogEvent.MemberUpdate);
-
-        for (const auditType of auditTypes) {
-          const audit = await newMember.guild.fetchAuditLogs({ type: auditType, limit: 8 }).catch(() => null);
-          const matchingEntry = audit?.entries?.find(entry =>
-            entry.targetId === newMember.id && entry.createdTimestamp >= cutoff
-          );
-          if (matchingEntry) {
-            if (matchingEntry.executor?.bot) return;
-            if (matchingEntry.executorId) {
-              const executorMember = await newMember.guild.members.fetch(matchingEntry.executorId).catch(() => null);
-              if (executorMember?.user?.bot) return;
-            }
-          }
-        }
-
-        const detail = [
-          added.length ? `Roles added: ${added.map(id => `<@&${id}>`).join(", ")}` : "",
-          removed.length ? `Roles removed: ${removed.map(id => `<@&${id}>`).join(", ")}` : "",
-          oldMember.nickname !== newMember.nickname ? `Nickname: ${oldMember.nickname || "none"} → ${newMember.nickname || "none"}` : ""
-        ].filter(Boolean).join("\\n");
-        await logAction(newMember.guild, "👤 Member roles or nickname changed",
-          "A human member update was detected. Bot-initiated changes are excluded.",
-          { targetId: newMember.id, extra: detail });
-      } catch (error) { console.error("[Staff Monitor] Member update:", error); }
-    });
+    // Role and nickname changes are logged once via GuildAuditLogEntryCreate above.
 
     const setupCommand = new SlashCommandBuilder()
       .setName("setup-staff-monitor")
