@@ -438,7 +438,7 @@
       tickets.records[channel.id] = { number, userId: interaction.user.id, category, status: "open", createdAt: new Date().toISOString(), claimedBy: null };
       saveTickets();
       const ticketEmbed = embed(`🎫 Support Ticket #${number}`,
-        `**Category:** ${category.replace(/_/g, " ")}\\n**Member:** <@${interaction.user.id}>\\n**IGN:** ${safe(ign, 100)}\\n**In-game tag:** ${safe(tag, 100)}\\n\\n**Description**\\n${safe(details, 3500)}\\n\\nPlease keep all discussion in this ticket. Staff will respond as soon as possible.`, 0xC9A44C);
+        `**Category:** ${category.replace(/_/g, " ")}\n**Member:** <@${interaction.user.id}>\n**IGN:** ${safe(ign, 100)}\n**In-game tag:** ${safe(tag, 100)}\n\n**Description**\n${safe(details, 3500)}\n\nPlease keep all discussion in this ticket. Staff will respond as soon as possible.`, 0xC9A44C);
       ticketEmbed.addFields({ name: "Privacy", value: isStaffComplaint ? "Senior leadership only" : "Support and moderation team" });
       const staffRoleIds = supportStaffIds(category).filter(id => overwriteTargets.has(id));
       await channel.send({
@@ -448,7 +448,7 @@
         allowedMentions: { users: [interaction.user.id], roles: staffRoleIds }
       });
       await interaction.editReply({ content: `✅ Your private support ticket has been created: ${channel}` });
-      const log = embed(`🎫 New support ticket #${number}`, `**Category:** ${category.replace(/_/g, " ")}\\n**Member:** <@${interaction.user.id}>\\n**Ticket:** ${channel}`, 0xC9A44C);
+      const log = embed(`🎫 New support ticket #${number}`, `**Category:** ${category.replace(/_/g, " ")}\n**Member:** <@${interaction.user.id}>\n**Ticket:** ${channel}`, 0xC9A44C);
       if (isStaffComplaint) await sendLog(guild, config.channels?.leadership, log);
       else { await sendLog(guild, config.channels?.moderation, log); await sendLog(guild, config.channels?.leadership, log); }
     }
@@ -550,21 +550,71 @@
           return interaction.reply({ content: "✅ You have claimed this ticket.", ephemeral: true });
         }
         if (action === "close") {
-          if (record.status === "closed") return interaction.reply({ content: "This ticket is already closed.", ephemeral: true });
+          if (record.status === "closed") {
+            return interaction.reply({ content: "This ticket is already closed.", ephemeral: true });
+          }
+
+          // Acknowledge immediately so Discord does not leave the button spinning.
           await interaction.deferReply({ ephemeral: true });
-          const messages = await interaction.channel.messages.fetch({ limit: 100 });
-          const transcript = [...messages.values()].sort((a,b) => a.createdTimestamp-b.createdTimestamp).map(m => `[${new Date(m.createdTimestamp).toISOString()}] ${m.author?.tag || "Unknown"}: ${m.content || (m.attachments.size ? "[attachment]" : "[embed/component]")}`).join("\n");
-          const attachment = new AttachmentBuilder(Buffer.from(transcript || "No messages.", "utf8"), { name: `support-${record.number}-transcript.txt` });
-          const isStaffComplaint = record.category === "staff_complaint";
-          const log = embed(`🔒 Support ticket #${record.number} closed`, `**Member:** <@${record.userId}>\n**Closed by:** <@${interaction.user.id}>\n**Category:** ${record.category.replace(/_/g, " ")}`, 0xE67E22);
-          const logChannelId = isStaffComplaint ? config.channels?.leadership : config.channels?.moderation;
-          if (logChannelId) { const logChannel = await interaction.guild.channels.fetch(logChannelId).catch(() => null); if (logChannel?.isTextBased()) await logChannel.send({ embeds: [log], files: [attachment] }); }
-          record.status = "closed"; record.closedAt = new Date().toISOString(); record.closedBy = interaction.user.id; saveTickets();
-          await interaction.channel.permissionOverwrites.edit(record.userId, { SendMessages: false, ViewChannel: true, ReadMessageHistory: true });
-          await interaction.channel.permissionOverwrites.edit(interaction.guild.roles.everyone.id, { ViewChannel: false });
-          await interaction.channel.setTopic(`OUTCASTS_SUPPORT|${record.number}|${record.userId}|${record.category}|closed`);
-          await interaction.message.edit({ components: ticketControls(true) });
-          return interaction.editReply("✅ Ticket closed. A transcript has been saved to the appropriate private staff log.");
+
+          try {
+            const messages = await interaction.channel.messages.fetch({ limit: 100 });
+            const transcript = [...messages.values()]
+              .sort((a, b) => a.createdTimestamp - b.createdTimestamp)
+              .map(m => `[${new Date(m.createdTimestamp).toISOString()}] ${m.author?.tag || "Unknown"}: ${m.content || (m.attachments.size ? "[attachment]" : "[embed/component]")}`)
+              .join("\n");
+
+            const attachment = new AttachmentBuilder(
+              Buffer.from(transcript || "No messages.", "utf8"),
+              { name: `support-${record.number}-transcript.txt` }
+            );
+            const isStaffComplaint = record.category === "staff_complaint";
+            const log = embed(
+              `🔒 Support ticket #${record.number} closed`,
+              `**Member:** <@${record.userId}>\n**Closed by:** <@${interaction.user.id}>\n**Category:** ${record.category.replace(/_/g, " ")}`,
+              0xE67E22
+            );
+            const logChannelId = isStaffComplaint
+              ? config.channels?.leadership
+              : config.channels?.moderation;
+
+            if (logChannelId) {
+              const logChannel = await interaction.guild.channels.fetch(logChannelId).catch(() => null);
+              if (logChannel?.isTextBased()) {
+                await logChannel.send({ embeds: [log], files: [attachment] });
+              } else {
+                console.warn(`[Staff Monitor] Ticket close log channel ${logChannelId} is missing or not text-based.`);
+              }
+            } else {
+              console.warn(`[Staff Monitor] No close-log channel configured for ${record.category}.`);
+            }
+
+            // Mark closed and lock the ticket only after the transcript/log step succeeds.
+            await interaction.channel.permissionOverwrites.edit(record.userId, {
+              SendMessages: false, ViewChannel: true, ReadMessageHistory: true
+            });
+            await interaction.channel.permissionOverwrites.edit(interaction.guild.roles.everyone.id, {
+              ViewChannel: false
+            });
+            await interaction.channel.setTopic(
+              `OUTCASTS_SUPPORT|${record.number}|${record.userId}|${record.category}|closed`
+            );
+            await interaction.message.edit({ components: ticketControls(true) });
+
+            record.status = "closed";
+            record.closedAt = new Date().toISOString();
+            record.closedBy = interaction.user.id;
+            saveTickets();
+
+            return interaction.editReply({
+              content: "✅ Ticket closed. A transcript has been saved to the appropriate private staff log."
+            });
+          } catch (error) {
+            console.error("[Staff Monitor] Ticket close failed:", error);
+            return interaction.editReply({
+              content: `❌ I couldn't fully close this ticket: ${safe(error.message, 500)}. Please check the Staff Monitor Bot permissions and Railway logs.`
+            }).catch(editError => console.error("[Staff Monitor] Could not report ticket-close failure:", editError));
+          }
         }
         if (action === "reopen") {
           if (record.status !== "closed") return interaction.reply({ content: "This ticket is already open.", ephemeral: true });
