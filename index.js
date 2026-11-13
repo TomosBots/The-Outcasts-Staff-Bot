@@ -200,7 +200,13 @@
         if (guild.id !== GUILD_ID) return;
         const executorId = entry.executorId || entry.executor?.id;
         if (!executorId) return;
+
+        // Human activity only: ignore audit-log actions performed by bot accounts.
+        // Discord usually supplies entry.executor; also resolve the member as a fallback.
+        if (entry.executor?.bot) return;
         const member = await guild.members.fetch(executorId).catch(() => null);
+        if (member?.user?.bot) return;
+
         const isMod = isModerator(member);
         const changes = entry.changes || [];
         const targetId = entry.targetId || null;
@@ -253,7 +259,7 @@
     });
     client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
       try {
-        if (newMember.guild.id !== GUILD_ID) return;
+        if (newMember.guild.id !== GUILD_ID || newMember.user.bot) return;
         const before = oldMember.roles.cache.map(r => r.id);
         const after = newMember.roles.cache.map(r => r.id);
         const added = after.filter(id => !before.includes(id));
@@ -622,11 +628,31 @@
             record.closedBy = interaction.user.id;
             saveTickets();
 
-            return interaction.editReply({
-              content: transcriptLogged
-                ? "✅ Ticket closed. The transcript was saved to the appropriate private staff log."
-                : "✅ Ticket closed, but I couldn't post the transcript to the staff log. Please check the log-channel ID and the bot's View Channel, Send Messages and Attach Files permissions."
+            if (!transcriptLogged) {
+              // Keep the channel available for staff if the transcript was not safely archived.
+              return interaction.editReply({
+                content: "⚠️ Ticket closed, but the transcript could not be saved to the staff log. I have kept this channel so the conversation is not lost. Please check the log-channel ID and the bot's View Channel, Send Messages and Attach Files permissions."
+              });
+            }
+
+            // Confirm the archive first, then delete the ticket channel after a short delay.
+            await interaction.editReply({
+              content: "✅ Ticket closed and transcript saved to the private staff log. This ticket channel will be deleted in 5 seconds."
             });
+
+            const channelToDelete = interaction.channel;
+            setTimeout(async () => {
+              try {
+                await channelToDelete.delete(
+                  `Support ticket #${record.number} closed by ${interaction.user.tag}; transcript archived`
+                );
+                console.log(`[Staff Monitor] Deleted closed support ticket #${record.number} (${channelToDelete.id}).`);
+              } catch (deleteError) {
+                console.error(`[Staff Monitor] Could not delete closed support ticket #${record.number}:`, deleteError);
+              }
+            }, 5000);
+
+            return;
           } catch (error) {
             console.error("[Staff Monitor] Ticket close failed:", error);
             return interaction.editReply({
