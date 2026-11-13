@@ -447,7 +447,7 @@
         components: ticketControls(),
         allowedMentions: { users: [interaction.user.id], roles: staffRoleIds }
       });
-      await interaction.reply({ content: `✅ Your private support ticket has been created: ${channel}`, ephemeral: true });
+      await interaction.editReply({ content: `✅ Your private support ticket has been created: ${channel}` });
       const log = embed(`🎫 New support ticket #${number}`, `**Category:** ${category.replace(/_/g, " ")}\\n**Member:** <@${interaction.user.id}>\\n**Ticket:** ${channel}`, 0xC9A44C);
       if (isStaffComplaint) await sendLog(guild, config.channels?.leadership, log);
       else { await sendLog(guild, config.channels?.moderation, log); await sendLog(guild, config.channels?.leadership, log); }
