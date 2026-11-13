@@ -1,7 +1,8 @@
     require("dotenv").config();
     const {
       Client, GatewayIntentBits, Partials, Events, SlashCommandBuilder, REST, Routes,
-      PermissionFlagsBits, ChannelType, EmbedBuilder, AuditLogEvent
+      PermissionFlagsBits, ChannelType, EmbedBuilder, AuditLogEvent,
+      ButtonBuilder, ButtonStyle, ActionRowBuilder
     } = require("discord.js");
     const fs = require("node:fs");
     const path = require("node:path");
@@ -33,6 +34,7 @@
     const DATA_DIR = process.env.DATA_DIR || "/data";
     const CONFIG_FILE = path.join(DATA_DIR, "staff-monitor-config.json");
     const STATS_FILE = path.join(DATA_DIR, "staff-monitor-stats.json");
+    const CHECKLIST_FILE = path.join(DATA_DIR, "moderation-daily-checklist.json");
     if (!TOKEN || !CLIENT_ID || !GUILD_ID) throw new Error("Set DISCORD_TOKEN, CLIENT_ID and GUILD_ID.");
 
     const client = new Client({
@@ -279,6 +281,80 @@
       .addRoleOption(o => o.setName("moderation_lead").setDescription("Moderation Lead role").setRequired(true))
       .addRoleOption(o => o.setName("moderator").setDescription("Moderator role").setRequired(true));
 
+    const MODERATION_CHECKLIST = [
+      "Review all open member reports, tickets and complaints.",
+      "Check scammer reports and suspicious player tags; pass confirmed concerns through the approved process.",
+      "Monitor public chats for rule-breaking, harassment, scams and disruptive behaviour.",
+      "Follow up on warnings, timeouts and unresolved moderation cases.",
+      "Check verification concerns and make sure suspicious accounts are escalated.",
+      "Ensure moderation actions have clear reasons and are recorded in the correct logs.",
+      "Check that moderators are covering their duties and that unattended areas are followed up.",
+      "Escalate serious incidents, repeat offenders and uncertain decisions to senior leadership.",
+      "Before finishing, review outstanding reports and hand over anything that still needs attention."
+    ];
+
+    function readChecklist() {
+      const saved = readJson(CHECKLIST_FILE, {});
+      const today = ukDate();
+      if (saved.date !== today) return { date: today, completed: {} };
+      return { date: today, completed: saved.completed || {} };
+    }
+
+    function saveChecklist(data) {
+      writeJson(CHECKLIST_FILE, data);
+    }
+
+    function canUseModerationChecklist(interaction) {
+      if (OWNER_IDS.includes(interaction.user.id)) return true;
+      if (interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) return true;
+      const roles = interaction.member?.roles?.cache;
+      if (!roles) return false;
+      const allowedIds = [config.roles?.headAdmin, config.roles?.seniorAdmin, config.roles?.moderationLead]
+        .filter(Boolean);
+      if (allowedIds.some(id => roles.has(id))) return true;
+      return ["Head Admin", "Senior Admins", "Moderation Lead"].some(name =>
+        roles.some(role => role.name === name)
+      );
+    }
+
+    function buildChecklistMessage(data) {
+      const completedCount = MODERATION_CHECKLIST.filter((_, i) => data.completed[i]).length;
+      const lines = MODERATION_CHECKLIST.map((item, i) => {
+        const markedBy = data.completed[i] && data.completedBy?.[i]
+          ? `\n   Completed by <@${data.completedBy[i]}>`
+          : "";
+        return `${data.completed[i] ? "☑️" : "⬜"} **${i + 1}.** ${item}${markedBy}`;
+      });
+      const description = lines.join("\n\n");
+      const message = embed("🛡️ Daily Moderation Team Checklist", description, 0xC9A44C);
+      message.addFields(
+        { name: "Date (UK)", value: data.date, inline: true },
+        { name: "Progress", value: `${completedCount}/${MODERATION_CHECKLIST.length} completed`, inline: true },
+        { name: "Reminder", value: "Only tick an item once the task has genuinely been completed. Escalate serious issues to senior leadership." }
+      );
+      return message;
+    }
+
+    function buildChecklistRows(data) {
+      const rows = [];
+      for (let start = 0; start < MODERATION_CHECKLIST.length; start += 5) {
+        const row = new ActionRowBuilder();
+        for (let i = start; i < Math.min(start + 5, MODERATION_CHECKLIST.length); i++) {
+          row.addComponents(new ButtonBuilder()
+            .setCustomId(`modcheck:${i}`)
+            .setLabel(`${data.completed[i] ? "✓ " : "□ "}${i + 1}`)
+            .setStyle(data.completed[i] ? ButtonStyle.Success : ButtonStyle.Secondary));
+        }
+        rows.push(row);
+      }
+      return rows;
+    }
+
+    const moderationChecklistCommand = new SlashCommandBuilder()
+      .setName("moderation-checklist")
+      .setDescription("Open the daily checklist for the Moderation team.")
+      .setDefaultMemberPermissions(null);
+
     async function setupChannel(guild, name, allowedIds) {
       const overwrites = [
         { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
@@ -308,10 +384,54 @@
     }
 
     client.on(Events.InteractionCreate, async interaction => {
-      if (!interaction.isChatInputCommand() || interaction.commandName !== "setup-staff-monitor") return;
-      if (!interaction.inGuild() || interaction.guildId !== GUILD_ID) {
-        return interaction.reply({ content: "Use this command inside The Outcasts.", ephemeral: true });
+      if (!interaction.inGuild() || interaction.guildId !== GUILD_ID) return;
+
+      if (interaction.isChatInputCommand() && interaction.commandName === "moderation-checklist") {
+        if (!canUseModerationChecklist(interaction)) {
+          return interaction.reply({
+            content: "⛔ This checklist is for the Moderation Lead and senior leadership only.",
+            ephemeral: true
+          });
+        }
+        const data = readChecklist();
+        saveChecklist(data);
+        return interaction.reply({
+          embeds: [buildChecklistMessage(data)],
+          components: buildChecklistRows(data),
+          ephemeral: true
+        });
       }
+
+      if (interaction.isButton() && interaction.customId.startsWith("modcheck:")) {
+        if (!canUseModerationChecklist(interaction)) {
+          return interaction.reply({ content: "⛔ You cannot update this moderation checklist.", ephemeral: true });
+        }
+        const index = Number(interaction.customId.split(":")[1]);
+        if (!Number.isInteger(index) || index < 0 || index >= MODERATION_CHECKLIST.length) {
+          return interaction.reply({ content: "That checklist item is invalid.", ephemeral: true });
+        }
+        const data = readChecklist();
+        data.completed[index] = !data.completed[index];
+        if (data.completed[index]) data.completedBy = data.completedBy || {};
+        if (data.completed[index]) data.completedBy[index] = interaction.user.id;
+        else if (data.completedBy) delete data.completedBy[index];
+        saveChecklist(data);
+        await interaction.update({
+          embeds: [buildChecklistMessage(data)],
+          components: buildChecklistRows(data)
+        });
+        const guild = interaction.guild;
+        const state = data.completed[index] ? "completed" : "reopened";
+        const checklistLog = embed("🛡️ Moderation checklist updated",
+          `<@${interaction.user.id}> ${state} item ${index + 1}: ${MODERATION_CHECKLIST[index]}\n\nDaily checklist date: ${data.date}`,
+          data.completed[index] ? 0x2ECC71 : 0xE67E22);
+        checklistLog.addFields({ name: "Updated by", value: `<@${interaction.user.id}>` });
+        await sendLog(guild, config.channels?.moderation, checklistLog);
+        await sendLog(guild, config.channels?.leadership, checklistLog);
+        return;
+      }
+
+      if (!interaction.isChatInputCommand() || interaction.commandName !== "setup-staff-monitor") return;
       if (!canConfigureStaffMonitor(interaction)) {
         return interaction.reply({
           content: "⛔ Only Ares, Artemis, server administrators, Head Admins or Senior Admins can configure the private staff monitoring channels.",
@@ -387,8 +507,8 @@
       console.log(`[Staff Monitor] Online as ${ready.user.tag}`);
       try {
         const rest = new REST({ version: "10" }).setToken(TOKEN);
-        await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: [setupCommand.toJSON()] });
-        console.log("[Staff Monitor] /setup-staff-monitor registered.");
+        await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: [setupCommand.toJSON(), moderationChecklistCommand.toJSON()] });
+        console.log("[Staff Monitor] /setup-staff-monitor and /moderation-checklist registered.");
       } catch (error) { console.error("[Staff Monitor] Command registration failed:", error); }
       cron.schedule("0 0 * * *", dailySummary, { timezone: "Europe/London" });
       if (!config.guildId) console.log("[Staff Monitor] Run /setup-staff-monitor in the server.");
