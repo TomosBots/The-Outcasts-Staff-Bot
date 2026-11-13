@@ -2,7 +2,7 @@
     const {
       Client, GatewayIntentBits, Partials, Events, SlashCommandBuilder, REST, Routes,
       PermissionFlagsBits, ChannelType, EmbedBuilder, AuditLogEvent,
-      ButtonBuilder, ButtonStyle, ActionRowBuilder
+      ButtonBuilder, ButtonStyle, ActionRowBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, StringSelectMenuBuilder, AttachmentBuilder
     } = require("discord.js");
     const fs = require("node:fs");
     const path = require("node:path");
@@ -35,6 +35,7 @@
     const CONFIG_FILE = path.join(DATA_DIR, "staff-monitor-config.json");
     const STATS_FILE = path.join(DATA_DIR, "staff-monitor-stats.json");
     const CHECKLIST_FILE = path.join(DATA_DIR, "moderation-daily-checklist.json");
+    const TICKETS_FILE = path.join(DATA_DIR, "support-tickets.json");
     if (!TOKEN || !CLIENT_ID || !GUILD_ID) throw new Error("Set DISCORD_TOKEN, CLIENT_ID and GUILD_ID.");
 
     const client = new Client({
@@ -46,6 +47,7 @@
 
     let config = {};
     let stats = { day: ukDate(), actions: {} };
+    let tickets = { nextNumber: 1, records: {} };
 
     function readJson(file, fallback) {
       try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return fallback; }
@@ -59,10 +61,8 @@
     function loadData() {
       fs.mkdirSync(DATA_DIR, { recursive: true });
       config = readJson(CONFIG_FILE, {});
-      stats = readJson(STATS_FILE, {
-        day: ukDate(),
-        actions: {}
-      });
+      stats = readJson(STATS_FILE, { day: ukDate(), actions: {} });
+      tickets = readJson(TICKETS_FILE, { nextNumber: 1, records: {} });
     }
     function ukDate() {
       return new Intl.DateTimeFormat("en-CA", {
@@ -355,6 +355,74 @@
       .setDescription("Open the daily checklist for the Moderation team.")
       .setDefaultMemberPermissions(null);
 
+    const supportPanelCommand = new SlashCommandBuilder()
+      .setName("setup-support-panel")
+      .setDescription("Post The Outcasts private support ticket panel in a channel.")
+      .addChannelOption(o => o.setName("channel").setDescription("Where members should open support tickets").addChannelTypes(ChannelType.GuildText).setRequired(true));
+
+    function supportStaffIds(type) {
+      const leadership = [config.roles?.headAdmin, config.roles?.seniorAdmin].filter(Boolean);
+      const moderators = [config.roles?.moderationLead, config.roles?.moderator].filter(Boolean);
+      // Staff complaints are deliberately restricted to owners and senior leadership.
+      return type === "staff_complaint" ? [...leadership] : [...leadership, ...moderators];
+    }
+    function canHandleTicket(interaction, type) {
+      if (OWNER_IDS.includes(interaction.user.id)) return true;
+      const roleIds = supportStaffIds(type);
+      return !!interaction.member?.roles?.cache && roleIds.some(id => interaction.member.roles.cache.has(id));
+    }
+    function ticketControls(closed = false) {
+      const row = new ActionRowBuilder();
+      if (!closed) row.addComponents(
+        new ButtonBuilder().setCustomId("support:claim").setLabel("Claim").setEmoji("🙋").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("support:close").setLabel("Close ticket").setEmoji("🔒").setStyle(ButtonStyle.Danger)
+      );
+      else row.addComponents(new ButtonBuilder().setCustomId("support:reopen").setLabel("Reopen ticket").setEmoji("🔓").setStyle(ButtonStyle.Success));
+      return [row];
+    }
+    function saveTickets() { writeJson(TICKETS_FILE, tickets); }
+    async function postSupportPanel(channel) {
+      const panel = embed("🎫 The Outcasts Support Centre",
+        "Need help with the server, party signups or an event? Have a concern or complaint?\n\n" +
+        "Press **Open Support Ticket** below and choose the option that best matches your issue. A private channel will be created for you and the appropriate staff team.\n\n" +
+        "🔐 Your ticket is private. Staff complaints are only visible to Ares, Artemis, Head Admins and Senior Admins.", 0xC9A44C);
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("support:open").setLabel("Open Support Ticket").setEmoji("🎫").setStyle(ButtonStyle.Primary)
+      );
+      await channel.send({ embeds: [panel], components: [row] });
+    }
+    async function createSupportTicket(interaction, category, ign, tag, details) {
+      const guild = interaction.guild;
+      const number = tickets.nextNumber++;
+      const isStaffComplaint = category === "staff_complaint";
+      const slug = category.replace(/_/g, "-");
+      const channelName = `support-${String(number).padStart(4, "0")}-${interaction.user.username.toLowerCase().replace(/[^a-z0-9-]/g, "").slice(0, 12) || "member"}`;
+      const overwrites = [
+        { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
+        { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.AttachFiles, PermissionFlagsBits.EmbedLinks] },
+        { id: client.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.ManageChannels, PermissionFlagsBits.AttachFiles, PermissionFlagsBits.EmbedLinks] },
+        ...OWNER_IDS.map(id => ({ id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.AttachFiles, PermissionFlagsBits.EmbedLinks] })),
+        ...supportStaffIds(category).map(id => ({ id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.AttachFiles, PermissionFlagsBits.EmbedLinks] }))
+      ];
+      const channel = await guild.channels.create({
+        name: channelName, type: ChannelType.GuildText,
+        topic: `OUTCASTS_SUPPORT|${number}|${interaction.user.id}|${category}|open`,
+        permissionOverwrites: overwrites,
+        reason: `Private support ticket #${number}`
+      });
+      tickets.records[channel.id] = { number, userId: interaction.user.id, category, status: "open", createdAt: new Date().toISOString(), claimedBy: null };
+      saveTickets();
+      const ticketEmbed = embed(`🎫 Support Ticket #${number}`,
+        `**Category:** ${category.replace(/_/g, " ")}\n**Member:** <@${interaction.user.id}>\n**IGN:** ${safe(ign, 100)}\n**In-game tag:** ${safe(tag, 100)}\n\n**Description**\n${safe(details, 3500)}\n\nPlease keep all discussion in this ticket. Staff will respond as soon as possible.`, 0xC9A44C);
+      ticketEmbed.addFields({ name: "Privacy", value: isStaffComplaint ? "Senior leadership only" : "Support and moderation team" });
+      await channel.send({ content: `<@${interaction.user.id}> ${supportStaffIds(category).map(id => `<@&${id}>`).join(" ")}`, embeds: [ticketEmbed], components: ticketControls(), allowedMentions: { users: [interaction.user.id], roles: supportStaffIds(category) } });
+      await interaction.reply({ content: `✅ Your private support ticket has been created: ${channel}`, ephemeral: true });
+      const log = embed(`🎫 New support ticket #${number}`, `**Category:** ${category.replace(/_/g, " ")}\n**Member:** <@${interaction.user.id}>\n**Ticket:** ${channel}`, 0xC9A44C);
+      if (isStaffComplaint) await sendLog(guild, config.channels?.leadership, log);
+      else { await sendLog(guild, config.channels?.moderation, log); await sendLog(guild, config.channels?.leadership, log); }
+    }
+
+
     async function setupChannel(guild, name, allowedIds) {
       const overwrites = [
         { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
@@ -385,6 +453,82 @@
 
     client.on(Events.InteractionCreate, async interaction => {
       if (!interaction.inGuild() || interaction.guildId !== GUILD_ID) return;
+
+      if (interaction.isChatInputCommand() && interaction.commandName === "setup-support-panel") {
+        if (!canConfigureStaffMonitor(interaction)) return interaction.reply({ content: "⛔ Only owners and senior leadership can set up the support panel.", ephemeral: true });
+        const channel = interaction.options.getChannel("channel", true);
+        await postSupportPanel(channel);
+        return interaction.reply({ content: `✅ Support panel posted in ${channel}.`, ephemeral: true });
+      }
+
+      if (interaction.isButton() && interaction.customId === "support:open") {
+        const menu = new StringSelectMenuBuilder().setCustomId("support:category").setPlaceholder("Choose what you need help with")
+          .addOptions(
+            { label: "Party signup issue", value: "party_signup", description: "Problems joining or appearing on a party list" },
+            { label: "Server issue", value: "server_issue", description: "Roles, channels, permissions or bot problems" },
+            { label: "Complaint about a staff member", value: "staff_complaint", description: "Private: only owners and senior leadership can view" },
+            { label: "Complaint about a member", value: "member_complaint", description: "Report behaviour, harassment or other concerns" },
+            { label: "Event or party complaint", value: "event_complaint", description: "A concern about a host, event or party" },
+            { label: "General support", value: "general", description: "Anything else you need help with" }
+          );
+        return interaction.reply({ content: "Please choose the type of support you need:", components: [new ActionRowBuilder().addComponents(menu)], ephemeral: true });
+      }
+
+      if (interaction.isStringSelectMenu() && interaction.customId === "support:category") {
+        const category = interaction.values[0];
+        const modal = new ModalBuilder().setCustomId(`support:form:${category}`).setTitle("The Outcasts Support Form");
+        const ign = new TextInputBuilder().setCustomId("ign").setLabel("In-game name (optional)").setStyle(TextInputStyle.Short).setRequired(false).setMaxLength(100);
+        const tag = new TextInputBuilder().setCustomId("tag").setLabel("In-game tag (optional)").setStyle(TextInputStyle.Short).setRequired(false).setMaxLength(100);
+        const details = new TextInputBuilder().setCustomId("details").setLabel("Explain the issue or complaint").setStyle(TextInputStyle.Paragraph).setRequired(true).setMinLength(10).setMaxLength(3500).setPlaceholder("Tell us what happened, when it happened and what help you need...");
+        modal.addComponents(new ActionRowBuilder().addComponents(ign), new ActionRowBuilder().addComponents(tag), new ActionRowBuilder().addComponents(details));
+        return interaction.showModal(modal);
+      }
+
+      if (interaction.isModalSubmit() && interaction.customId.startsWith("support:form:")) {
+        const category = interaction.customId.split(":")[2];
+        const details = interaction.fields.getTextInputValue("details");
+        try { return await createSupportTicket(interaction, category, interaction.fields.getTextInputValue("ign") || "Not provided", interaction.fields.getTextInputValue("tag") || "Not provided", details); }
+        catch (error) { console.error("[Staff Monitor] Ticket creation failed:", error); return interaction.reply({ content: "❌ I couldn't create your ticket. Please contact a staff member or try again shortly.", ephemeral: true }); }
+      }
+
+      if (interaction.isButton() && interaction.customId.startsWith("support:" ) && ["claim", "close", "reopen"].includes(interaction.customId.split(":")[1])) {
+        const action = interaction.customId.split(":")[1];
+        const record = tickets.records[interaction.channelId];
+        if (!record) return interaction.reply({ content: "This ticket record could not be found.", ephemeral: true });
+        if (!canHandleTicket(interaction, record.category)) return interaction.reply({ content: "⛔ You are not authorised to manage this ticket.", ephemeral: true });
+        if (action === "claim") {
+          if (record.status !== "open") return interaction.reply({ content: "This ticket is not open.", ephemeral: true });
+          record.claimedBy = interaction.user.id; saveTickets();
+          await interaction.channel.send({ embeds: [embed("🙋 Ticket claimed", `This ticket is being handled by <@${interaction.user.id}>.`, 0x3498DB)] });
+          return interaction.reply({ content: "✅ You have claimed this ticket.", ephemeral: true });
+        }
+        if (action === "close") {
+          if (record.status === "closed") return interaction.reply({ content: "This ticket is already closed.", ephemeral: true });
+          await interaction.deferReply({ ephemeral: true });
+          const messages = await interaction.channel.messages.fetch({ limit: 100 });
+          const transcript = [...messages.values()].sort((a,b) => a.createdTimestamp-b.createdTimestamp).map(m => `[${new Date(m.createdTimestamp).toISOString()}] ${m.author?.tag || "Unknown"}: ${m.content || (m.attachments.size ? "[attachment]" : "[embed/component]")}`).join("\n");
+          const attachment = new AttachmentBuilder(Buffer.from(transcript || "No messages.", "utf8"), { name: `support-${record.number}-transcript.txt` });
+          const isStaffComplaint = record.category === "staff_complaint";
+          const log = embed(`🔒 Support ticket #${record.number} closed`, `**Member:** <@${record.userId}>\n**Closed by:** <@${interaction.user.id}>\n**Category:** ${record.category.replace(/_/g, " ")}`, 0xE67E22);
+          const logChannelId = isStaffComplaint ? config.channels?.leadership : config.channels?.moderation;
+          if (logChannelId) { const logChannel = await interaction.guild.channels.fetch(logChannelId).catch(() => null); if (logChannel?.isTextBased()) await logChannel.send({ embeds: [log], files: [attachment] }); }
+          record.status = "closed"; record.closedAt = new Date().toISOString(); record.closedBy = interaction.user.id; saveTickets();
+          await interaction.channel.permissionOverwrites.edit(record.userId, { SendMessages: false, ViewChannel: true, ReadMessageHistory: true });
+          await interaction.channel.permissionOverwrites.edit(interaction.guild.roles.everyone.id, { ViewChannel: false });
+          await interaction.channel.setTopic(`OUTCASTS_SUPPORT|${record.number}|${record.userId}|${record.category}|closed`);
+          await interaction.message.edit({ components: ticketControls(true) });
+          return interaction.editReply("✅ Ticket closed. A transcript has been saved to the appropriate private staff log.");
+        }
+        if (action === "reopen") {
+          if (record.status !== "closed") return interaction.reply({ content: "This ticket is already open.", ephemeral: true });
+          record.status = "open"; record.reopenedAt = new Date().toISOString(); record.reopenedBy = interaction.user.id; saveTickets();
+          await interaction.channel.permissionOverwrites.edit(record.userId, { ViewChannel: true, SendMessages: true, ReadMessageHistory: true, AttachFiles: true, EmbedLinks: true });
+          await interaction.channel.setTopic(`OUTCASTS_SUPPORT|${record.number}|${record.userId}|${record.category}|open`);
+          await interaction.message.edit({ components: ticketControls(false) });
+          await interaction.channel.send({ embeds: [embed("🔓 Ticket reopened", `Reopened by <@${interaction.user.id}>.`, 0x2ECC71)] });
+          return interaction.reply({ content: "✅ Ticket reopened.", ephemeral: true });
+        }
+      }
 
       if (interaction.isChatInputCommand() && interaction.commandName === "moderation-checklist") {
         if (!canUseModerationChecklist(interaction)) {
@@ -507,8 +651,8 @@
       console.log(`[Staff Monitor] Online as ${ready.user.tag}`);
       try {
         const rest = new REST({ version: "10" }).setToken(TOKEN);
-        await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: [setupCommand.toJSON(), moderationChecklistCommand.toJSON()] });
-        console.log("[Staff Monitor] /setup-staff-monitor and /moderation-checklist registered.");
+        await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: [setupCommand.toJSON(), moderationChecklistCommand.toJSON(), supportPanelCommand.toJSON()] });
+        console.log("[Staff Monitor] /setup-staff-monitor, /moderation-checklist and /setup-support-panel registered.");
       } catch (error) { console.error("[Staff Monitor] Command registration failed:", error); }
       cron.schedule("0 0 * * *", dailySummary, { timezone: "Europe/London" });
       if (!config.guildId) console.log("[Staff Monitor] Run /setup-staff-monitor in the server.");
