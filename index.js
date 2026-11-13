@@ -578,10 +578,21 @@
               ? config.channels?.leadership
               : config.channels?.moderation;
 
+            let transcriptLogged = false;
             if (logChannelId) {
-              const logChannel = await interaction.guild.channels.fetch(logChannelId).catch(() => null);
+              const logChannel = await interaction.guild.channels.fetch(logChannelId).catch(error => {
+                console.error(`[Staff Monitor] Could not fetch ticket log channel ${logChannelId}:`, error);
+                return null;
+              });
               if (logChannel?.isTextBased()) {
-                await logChannel.send({ embeds: [log], files: [attachment] });
+                try {
+                  await logChannel.send({ embeds: [log], files: [attachment] });
+                  transcriptLogged = true;
+                } catch (logError) {
+                  // A missing log-channel permission must not prevent the ticket itself
+                  // from being closed. The error is recorded for the server owner.
+                  console.error(`[Staff Monitor] Could not send ticket transcript to log channel ${logChannelId}:`, logError);
+                }
               } else {
                 console.warn(`[Staff Monitor] Ticket close log channel ${logChannelId} is missing or not text-based.`);
               }
@@ -607,7 +618,9 @@
             saveTickets();
 
             return interaction.editReply({
-              content: "✅ Ticket closed. A transcript has been saved to the appropriate private staff log."
+              content: transcriptLogged
+                ? "✅ Ticket closed. The transcript was saved to the appropriate private staff log."
+                : "✅ Ticket closed, but I couldn't post the transcript to the staff log. Please check the log-channel ID and the bot's View Channel, Send Messages and Attach Files permissions."
             });
           } catch (error) {
             console.error("[Staff Monitor] Ticket close failed:", error);
