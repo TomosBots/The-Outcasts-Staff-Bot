@@ -275,14 +275,27 @@
 
     const MODERATION_CHECKLIST = [
       "Review all open member reports, tickets and complaints.",
-      "Check scammer reports and suspicious player tags; pass confirmed concerns through the approved process.",
+      {
+        title: "Check Other Blacklist Channels",
+        description: "Check other servers' blacklist/scammer channels and use /add-scammer to add them to the list."
+      },
       "Monitor public chats for rule-breaking, harassment, scams and disruptive behaviour.",
-      "Follow up on warnings, timeouts and unresolved moderation cases.",
+      {
+        title: "Be on Standby to Help Our Hosts",
+        description: "Ensure you are available to help any of our hosts if needed."
+      },
       "Check verification concerns and make sure suspicious accounts are escalated.",
       "Ensure moderation actions have clear reasons and are recorded in the correct logs.",
       "Check that moderators are covering their duties and that unattended areas are followed up.",
-      "Escalate serious incidents, repeat offenders and uncertain decisions to senior leadership.",
-      "Before finishing, review outstanding reports and hand over anything that still needs attention."
+      {
+        title: "Escalate Serious Issues",
+        description: "Escalate any serious issues that you can not handle to your moderation lead or to any senior admins."
+      },
+      "Before finishing, review outstanding reports and hand over anything that still needs attention.",
+      {
+        title: "Advertise the Server Daily",
+        description: "Ensure you advertise the server at least once a day. Templates for in-game advertising can be found here: <#1560816351155851344>"
+      }
     ];
 
     function readChecklist() {
@@ -336,13 +349,19 @@
       );
     }
 
+    function checklistItemText(item) {
+      return typeof item === "string"
+        ? item
+        : `**${item.title}**\n${item.description}`;
+    }
+
     function buildChecklistMessage(data, moderatorId, moderatorName) {
       const completedCount = MODERATION_CHECKLIST.filter((_, i) => data.completed?.[i]).length;
       const lines = MODERATION_CHECKLIST.map((item, i) => {
         const markedBy = data.completed?.[i] && data.completedBy?.[i]
           ? `\n   Marked complete by <@${data.completedBy[i]}>`
           : "";
-        return `${data.completed?.[i] ? "☑️" : "⬜"} **${i + 1}.** ${item}${markedBy}`;
+        return `${data.completed?.[i] ? "☑️" : "⬜"} **${i + 1}.** ${checklistItemText(item)}${markedBy}`;
       });
       const message = embed(`🛡️ Moderator Checklist — ${safe(moderatorName, 80)}`, lines.join("\n\n"), 0xC9A44C);
       message.addFields(
@@ -775,7 +794,7 @@
         await interaction.update(view);
         const state = moderatorData.completed[index] ? "completed" : "reopened";
         const checklistLog = embed("🛡️ Moderator checklist updated",
-          `<@${interaction.user.id}> ${state} item ${index + 1} for <@${moderatorId}>: ${MODERATION_CHECKLIST[index]}\n\nDaily checklist date: ${data.date}`,
+          `<@${interaction.user.id}> ${state} item ${index + 1} for <@${moderatorId}>: ${checklistItemText(MODERATION_CHECKLIST[index])}\n\nDaily checklist date: ${data.date}`,
           moderatorData.completed[index] ? 0x2ECC71 : 0xE67E22);
         checklistLog.addFields({ name: "Updated by", value: `<@${interaction.user.id}>` });
         await sendLog(interaction.guild, config.channels?.moderation, checklistLog);
