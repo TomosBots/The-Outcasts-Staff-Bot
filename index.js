@@ -288,12 +288,39 @@
     function readChecklist() {
       const saved = readJson(CHECKLIST_FILE, {});
       const today = ukDate();
-      if (saved.date !== today) return { date: today, completed: {} };
-      return { date: today, completed: saved.completed || {} };
+      // Each moderator has an independent checklist for the current UK day.
+      if (saved.date !== today) return { date: today, moderators: {} };
+      return { date: today, moderators: saved.moderators || {} };
     }
 
     function saveChecklist(data) {
       writeJson(CHECKLIST_FILE, data);
+    }
+
+    async function getModeratorMembers(guild) {
+      const roleId = config.roles?.moderator;
+      if (!roleId) return [];
+      await guild.members.fetch();
+      return [...guild.members.cache.values()]
+        .filter(member => !member.user.bot && member.roles.cache.has(roleId))
+        .sort((a, b) => a.displayName.localeCompare(b.displayName));
+    }
+
+    async function buildModeratorSelectRow(guild, selectedId = null) {
+      const moderators = await getModeratorMembers(guild);
+      const options = moderators.slice(0, 25).map(member => ({
+        label: member.displayName.slice(0, 100),
+        value: member.id,
+        description: member.user.tag.slice(0, 100),
+        default: member.id === selectedId
+      }));
+      const menu = new StringSelectMenuBuilder()
+        .setCustomId("modcheck:select")
+        .setPlaceholder(moderators.length ? "Select a moderator to view their checklist" : "No moderators found")
+        .setMinValues(1).setMaxValues(1)
+        .setDisabled(moderators.length === 0)
+        .addOptions(options.length ? options : [{ label: "No moderators found", value: "none" }]);
+      return { row: new ActionRowBuilder().addComponents(menu), total: moderators.length };
     }
 
     function canUseModerationChecklist(interaction) {
@@ -309,37 +336,55 @@
       );
     }
 
-    function buildChecklistMessage(data) {
-      const completedCount = MODERATION_CHECKLIST.filter((_, i) => data.completed[i]).length;
+    function buildChecklistMessage(data, moderatorId, moderatorName) {
+      const completedCount = MODERATION_CHECKLIST.filter((_, i) => data.completed?.[i]).length;
       const lines = MODERATION_CHECKLIST.map((item, i) => {
-        const markedBy = data.completed[i] && data.completedBy?.[i]
-          ? `\n   Completed by <@${data.completedBy[i]}>`
+        const markedBy = data.completed?.[i] && data.completedBy?.[i]
+          ? `\n   Marked complete by <@${data.completedBy[i]}>`
           : "";
-        return `${data.completed[i] ? "☑️" : "⬜"} **${i + 1}.** ${item}${markedBy}`;
+        return `${data.completed?.[i] ? "☑️" : "⬜"} **${i + 1}.** ${item}${markedBy}`;
       });
-      const description = lines.join("\n\n");
-      const message = embed("🛡️ Daily Moderation Team Checklist", description, 0xC9A44C);
+      const message = embed(`🛡️ Moderator Checklist — ${safe(moderatorName, 80)}`, lines.join("\n\n"), 0xC9A44C);
       message.addFields(
+        { name: "Moderator", value: `<@${moderatorId}>`, inline: true },
         { name: "Date (UK)", value: data.date, inline: true },
         { name: "Progress", value: `${completedCount}/${MODERATION_CHECKLIST.length} completed`, inline: true },
-        { name: "Reminder", value: "Only tick an item once the task has genuinely been completed. Escalate serious issues to senior leadership." }
+        { name: "Reminder", value: "Only tick a task once it has genuinely been completed. Escalate serious issues to senior leadership." }
       );
       return message;
     }
 
-    function buildChecklistRows(data) {
+    function buildChecklistRows(data, moderatorId) {
       const rows = [];
       for (let start = 0; start < MODERATION_CHECKLIST.length; start += 5) {
         const row = new ActionRowBuilder();
         for (let i = start; i < Math.min(start + 5, MODERATION_CHECKLIST.length); i++) {
           row.addComponents(new ButtonBuilder()
-            .setCustomId(`modcheck:${i}`)
-            .setLabel(`${data.completed[i] ? "✓ " : "□ "}${i + 1}`)
-            .setStyle(data.completed[i] ? ButtonStyle.Success : ButtonStyle.Secondary));
+            .setCustomId(`modcheck:${moderatorId}:${i}`)
+            .setLabel(`${data.completed?.[i] ? "✓ " : "□ "}${i + 1}`)
+            .setStyle(data.completed?.[i] ? ButtonStyle.Success : ButtonStyle.Secondary));
         }
         rows.push(row);
       }
       return rows;
+    }
+
+    async function buildModeratorChecklistView(guild, moderatorId) {
+      const member = await guild.members.fetch(moderatorId).catch(() => null);
+      if (!member || !config.roles?.moderator || !member.roles.cache.has(config.roles.moderator)) {
+        return { error: "That member is no longer assigned the Moderators role." };
+      }
+      const checklist = readChecklist();
+      checklist.moderators[moderatorId] = checklist.moderators[moderatorId] || { completed: {}, completedBy: {} };
+      saveChecklist(checklist);
+      const memberData = checklist.moderators[moderatorId];
+      const selector = await buildModeratorSelectRow(guild, moderatorId);
+      const rows = [selector.row, ...buildChecklistRows(checklist.date ? { ...memberData, date: checklist.date } : memberData, moderatorId)];
+      return {
+        embeds: [buildChecklistMessage({ ...memberData, date: checklist.date }, moderatorId, member.displayName)],
+        components: rows,
+        content: selector.total > 25 ? `Showing the first 25 of ${selector.total} moderators in the dropdown. If you need more than 25 selectable moderators, ask me to add dropdown paging.` : "Select another moderator from the dropdown to view their progress."
+      };
     }
 
     const moderationChecklistCommand = new SlashCommandBuilder()
@@ -681,41 +726,60 @@
             ephemeral: true
           });
         }
-        const data = readChecklist();
-        saveChecklist(data);
+        const selector = await buildModeratorSelectRow(interaction.guild);
+        if (!selector.total) {
+          return interaction.reply({ content: "No members currently have the configured Moderators role. Check /setup-staff-monitor first.", ephemeral: true });
+        }
         return interaction.reply({
-          embeds: [buildChecklistMessage(data)],
-          components: buildChecklistRows(data),
+          content: "Choose a moderator from the dropdown to view and update their individual daily checklist.",
+          components: [selector.row],
           ephemeral: true
         });
+      }
+
+      if (interaction.isStringSelectMenu() && interaction.customId === "modcheck:select") {
+        if (!canUseModerationChecklist(interaction)) {
+          return interaction.reply({ content: "⛔ You cannot view or update this moderation checklist.", ephemeral: true });
+        }
+        const moderatorId = interaction.values[0];
+        if (moderatorId === "none") return interaction.reply({ content: "No moderators are available.", ephemeral: true });
+        const view = await buildModeratorChecklistView(interaction.guild, moderatorId);
+        if (view.error) return interaction.update({ content: view.error, embeds: [], components: [] });
+        return interaction.update(view);
       }
 
       if (interaction.isButton() && interaction.customId.startsWith("modcheck:")) {
         if (!canUseModerationChecklist(interaction)) {
           return interaction.reply({ content: "⛔ You cannot update this moderation checklist.", ephemeral: true });
         }
-        const index = Number(interaction.customId.split(":")[1]);
-        if (!Number.isInteger(index) || index < 0 || index >= MODERATION_CHECKLIST.length) {
+        const [, moderatorId, indexText] = interaction.customId.split(":");
+        const index = Number(indexText);
+        if (!moderatorId || !Number.isInteger(index) || index < 0 || index >= MODERATION_CHECKLIST.length) {
           return interaction.reply({ content: "That checklist item is invalid.", ephemeral: true });
         }
+        const member = await interaction.guild.members.fetch(moderatorId).catch(() => null);
+        if (!member || !config.roles?.moderator || !member.roles.cache.has(config.roles.moderator)) {
+          return interaction.reply({ content: "That member is no longer assigned the Moderators role.", ephemeral: true });
+        }
         const data = readChecklist();
-        data.completed[index] = !data.completed[index];
-        if (data.completed[index]) data.completedBy = data.completedBy || {};
-        if (data.completed[index]) data.completedBy[index] = interaction.user.id;
-        else if (data.completedBy) delete data.completedBy[index];
+        data.moderators[moderatorId] = data.moderators[moderatorId] || { completed: {}, completedBy: {} };
+        const moderatorData = data.moderators[moderatorId];
+        moderatorData.completed = moderatorData.completed || {};
+        moderatorData.completedBy = moderatorData.completedBy || {};
+        moderatorData.completed[index] = !moderatorData.completed[index];
+        if (moderatorData.completed[index]) moderatorData.completedBy[index] = interaction.user.id;
+        else delete moderatorData.completedBy[index];
         saveChecklist(data);
-        await interaction.update({
-          embeds: [buildChecklistMessage(data)],
-          components: buildChecklistRows(data)
-        });
-        const guild = interaction.guild;
-        const state = data.completed[index] ? "completed" : "reopened";
-        const checklistLog = embed("🛡️ Moderation checklist updated",
-          `<@${interaction.user.id}> ${state} item ${index + 1}: ${MODERATION_CHECKLIST[index]}\n\nDaily checklist date: ${data.date}`,
-          data.completed[index] ? 0x2ECC71 : 0xE67E22);
+        const view = await buildModeratorChecklistView(interaction.guild, moderatorId);
+        if (view.error) return interaction.update({ content: view.error, embeds: [], components: [] });
+        await interaction.update(view);
+        const state = moderatorData.completed[index] ? "completed" : "reopened";
+        const checklistLog = embed("🛡️ Moderator checklist updated",
+          `<@${interaction.user.id}> ${state} item ${index + 1} for <@${moderatorId}>: ${MODERATION_CHECKLIST[index]}\n\nDaily checklist date: ${data.date}`,
+          moderatorData.completed[index] ? 0x2ECC71 : 0xE67E22);
         checklistLog.addFields({ name: "Updated by", value: `<@${interaction.user.id}>` });
-        await sendLog(guild, config.channels?.moderation, checklistLog);
-        await sendLog(guild, config.channels?.leadership, checklistLog);
+        await sendLog(interaction.guild, config.channels?.moderation, checklistLog);
+        await sendLog(interaction.guild, config.channels?.leadership, checklistLog);
         return;
       }
 
