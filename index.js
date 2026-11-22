@@ -18,9 +18,11 @@
       "1549252381458436189", // Ares
       "1548812445240262799"  // Artemis
     ];
+    const BLOCKED_STAFF_IDS = new Set(["1547717354111242291", "1215374564457062415"]);
     const STAFF_MONITOR_SETUP_ROLE_NAMES = ["Head Admin", "Senior Admins"];
 
     function canConfigureStaffMonitor(interaction) {
+      if (BLOCKED_STAFF_IDS.has(interaction.user.id)) return false;
       if (OWNER_IDS.includes(interaction.user.id)) return true;
       if (interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) return true;
 
@@ -35,7 +37,6 @@
     const CONFIG_FILE = path.join(DATA_DIR, "staff-monitor-config.json");
     const STATS_FILE = path.join(DATA_DIR, "staff-monitor-stats.json");
     const CHECKLIST_FILE = path.join(DATA_DIR, "moderation-daily-checklist.json");
-    const LEAD_CHECKLIST_FILE = path.join(DATA_DIR, "moderation-lead-daily-checklist.json");
     const TICKETS_FILE = path.join(DATA_DIR, "support-tickets.json");
     if (!TOKEN || !CLIENT_ID || !GUILD_ID) throw new Error("Set DISCORD_TOKEN, CLIENT_ID and GUILD_ID.");
 
@@ -90,7 +91,7 @@
       }
     }
     function isModerator(member) {
-      return !!member && !!config.roles?.moderator && member.roles.cache.has(config.roles.moderator);
+      return !!member && !BLOCKED_STAFF_IDS.has(member.id) && !!config.roles?.moderator && member.roles.cache.has(config.roles.moderator);
     }
     function ensureDailyStats() {
       const today = ukDate();
@@ -338,82 +339,6 @@
       "Maintain a positive, safe, and welcoming community."
     ];
 
-    const MODERATION_LEAD_CHECKLIST = [
-      "Lead and coordinate the Moderator Team.",
-      "Assign tasks and ensure moderators remain active.",
-      "Monitor moderator performance and accountability.",
-      "Host parties and assist with party coordination.",
-      "Serve as a backup party host when needed.",
-      "Handle escalated member disputes and reports.",
-      "Ensure server rules are consistently enforced.",
-      "Guide and support moderators when needed.",
-      "Report concerns and team performance to Head Admin Callisto.",
-      "Help maintain a safe, welcoming, scam-free community."
-    ];
-
-    function readLeadChecklist() {
-      const saved = readJson(LEAD_CHECKLIST_FILE, {});
-      const today = ukDate();
-      if (saved.date !== today) return { date: today, leads: {} };
-      return { date: today, leads: saved.leads || {} };
-    }
-
-    function saveLeadChecklist(data) {
-      writeJson(LEAD_CHECKLIST_FILE, data);
-    }
-
-    function buildLeadChecklistMessage(data, leadId, leadName) {
-      const completedCount = MODERATION_LEAD_CHECKLIST.filter((_, i) => data.completed?.[i]).length;
-      const lines = MODERATION_LEAD_CHECKLIST.map((item, i) => {
-        const markedBy = data.completed?.[i] && data.completedBy?.[i]
-          ? `\n   Marked complete by <@${data.completedBy[i]}>`
-          : "";
-        return `${data.completed?.[i] ? "☑️" : "⬜"} **${i + 1}.** ${item}${markedBy}`;
-      });
-      const message = embed(`🛡️ Lead Moderator Checklist — ${safe(leadName, 80)}`, lines.join("\n\n"), 0xC9A44C);
-      message.addFields(
-        { name: "Lead Moderator", value: `<@${leadId}>`, inline: true },
-        { name: "Date (UK)", value: data.date, inline: true },
-        { name: "Progress", value: `${completedCount}/${MODERATION_LEAD_CHECKLIST.length} completed`, inline: true },
-        { name: "Primary role", value: "Oversee daily moderation operations, coordinate the Moderator Team, and ensure the server runs smoothly." },
-        { name: "Expectation", value: "Lead by example, keep moderators accountable, and support Head Admin Callisto and the Senior Admins." },
-        { name: "Team motto", value: "🖤 Lead the team. Protect the community. Keep The Outcasts thriving!" },
-        { name: "Reminder", value: "Only tick a responsibility once you have genuinely completed it." }
-      );
-      return message;
-    }
-
-    function buildLeadChecklistRows(data, leadId) {
-      const rows = [];
-      for (let start = 0; start < MODERATION_LEAD_CHECKLIST.length; start += 5) {
-        const row = new ActionRowBuilder();
-        for (let i = start; i < Math.min(start + 5, MODERATION_LEAD_CHECKLIST.length); i++) {
-          row.addComponents(new ButtonBuilder()
-            .setCustomId(`leadcheck:${leadId}:${i}`)
-            .setLabel(`${data.completed?.[i] ? "✓ " : "□ "}${i + 1}`)
-            .setStyle(data.completed?.[i] ? ButtonStyle.Success : ButtonStyle.Secondary));
-        }
-        rows.push(row);
-      }
-      return rows;
-    }
-
-    async function buildOwnLeadChecklistView(guild, leadId) {
-      const member = await guild.members.fetch(leadId).catch(() => null);
-      if (!member || !config.roles?.moderationLead || !member.roles.cache.has(config.roles.moderationLead)) {
-        return { error: "You must currently have the Moderation Lead role to use this checklist." };
-      }
-      const checklist = readLeadChecklist();
-      checklist.leads[leadId] = checklist.leads[leadId] || { completed: {}, completedBy: {} };
-      saveLeadChecklist(checklist);
-      const leadData = { ...checklist.leads[leadId], date: checklist.date };
-      return {
-        content: "🛡️ This is your personal daily Lead Moderator checklist. Only you can tick or untick your items.",
-        embeds: [buildLeadChecklistMessage(leadData, leadId, member.displayName)],
-        components: buildLeadChecklistRows(leadData, leadId)
-      };
-    }
-
     function readChecklist() {
       const saved = readJson(CHECKLIST_FILE, {});
       const today = ukDate();
@@ -431,7 +356,7 @@
       if (!roleId) return [];
       await guild.members.fetch();
       return [...guild.members.cache.values()]
-        .filter(member => !member.user.bot && member.roles.cache.has(roleId))
+        .filter(member => !member.user.bot && !BLOCKED_STAFF_IDS.has(member.id) && member.roles.cache.has(roleId))
         .sort((a, b) => a.displayName.localeCompare(b.displayName));
     }
 
@@ -453,6 +378,7 @@
     }
 
     function canUseModerationChecklist(interaction) {
+      if (BLOCKED_STAFF_IDS.has(interaction.user.id)) return false;
       if (OWNER_IDS.includes(interaction.user.id)) return true;
       if (interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) return true;
       const roles = interaction.member?.roles?.cache;
@@ -508,7 +434,7 @@
 
     async function buildModeratorChecklistView(guild, moderatorId) {
       const member = await guild.members.fetch(moderatorId).catch(() => null);
-      if (!member || !config.roles?.moderator || !member.roles.cache.has(config.roles.moderator)) {
+      if (!member || BLOCKED_STAFF_IDS.has(member.id) || !config.roles?.moderator || !member.roles.cache.has(config.roles.moderator)) {
         return { error: "That member is no longer assigned the Moderators role." };
       }
       const checklist = readChecklist();
@@ -550,11 +476,6 @@
       .setDescription("Open your own private daily moderator checklist.")
       .setDefaultMemberPermissions(null);
 
-    const leadChecklistCommand = new SlashCommandBuilder()
-      .setName("lead-checklist")
-      .setDescription("Open your own private daily Lead Moderator checklist.")
-      .setDefaultMemberPermissions(null);
-
     const logTaskCommand = new SlashCommandBuilder()
       .setName("log-task")
       .setDescription("Record a task you completed for The Outcasts today.")
@@ -581,6 +502,7 @@
       return type === "staff_complaint" ? [...leadership] : [...leadership, ...moderators];
     }
     function canHandleTicket(interaction, type) {
+      if (BLOCKED_STAFF_IDS.has(interaction.user.id)) return false;
       if (OWNER_IDS.includes(interaction.user.id)) return true;
       const roleIds = supportStaffIds(type);
       return !!interaction.member?.roles?.cache && roleIds.some(id => interaction.member.roles.cache.has(id));
@@ -642,6 +564,10 @@
       for (const target of overwriteTargets.values()) {
         overwrites.push({ id: target, allow: viewPerms });
       }
+      for (const blockedId of BLOCKED_STAFF_IDS) {
+        const blockedMember = await guild.members.fetch(blockedId).catch(() => null);
+        if (blockedMember) overwrites.push({ id: blockedMember, deny: [PermissionFlagsBits.ViewChannel] });
+      }
 
       const channel = await guild.channels.create({
         name: channelName, type: ChannelType.GuildText,
@@ -696,7 +622,8 @@
           id,
           allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory],
           deny: [PermissionFlagsBits.SendMessages, PermissionFlagsBits.SendMessagesInThreads]
-        }))
+        })),
+        ...[...BLOCKED_STAFF_IDS].map(id => ({ id, deny: [PermissionFlagsBits.ViewChannel] }))
       ];
       let channel = guild.channels.cache.find(c => c.name === name && c.type === ChannelType.GuildText);
       if (!channel) {
@@ -917,50 +844,6 @@
         }
       }
 
-      if (interaction.isChatInputCommand() && interaction.commandName === "lead-checklist") {
-        if (!interaction.member?.roles?.cache?.has(config.roles?.moderationLead)) {
-          return interaction.reply({ content: "⛔ This checklist is only available to the member with the configured Moderation Lead role.", ephemeral: true });
-        }
-        const view = await buildOwnLeadChecklistView(interaction.guild, interaction.user.id);
-        if (view.error) return interaction.reply({ content: view.error, ephemeral: true });
-        return interaction.reply({ ...view, ephemeral: true });
-      }
-
-      if (interaction.isButton() && interaction.customId.startsWith("leadcheck:")) {
-        const [, leadId, indexText] = interaction.customId.split(":");
-        const isLeadOwner = leadId === interaction.user.id && interaction.member?.roles?.cache?.has(config.roles?.moderationLead);
-        if (!isLeadOwner) {
-          return interaction.reply({ content: "⛔ You can only update your own Lead Moderator checklist.", ephemeral: true });
-        }
-        const index = Number(indexText);
-        if (!Number.isInteger(index) || index < 0 || index >= MODERATION_LEAD_CHECKLIST.length) {
-          return interaction.reply({ content: "That Lead Moderator checklist item is invalid.", ephemeral: true });
-        }
-        const data = readLeadChecklist();
-        data.leads[leadId] = data.leads[leadId] || { completed: {}, completedBy: {} };
-        const leadData = data.leads[leadId];
-        leadData.completed ||= {};
-        leadData.completedBy ||= {};
-        leadData.completed[index] = !leadData.completed[index];
-        if (leadData.completed[index]) {
-          leadData.completedBy[index] = interaction.user.id;
-          recordModeratorTask(leadId, `Completed Lead Moderator checklist item: ${MODERATION_LEAD_CHECKLIST[index]}`, "Lead Moderator checklist");
-        } else {
-          delete leadData.completedBy[index];
-        }
-        saveLeadChecklist(data);
-        const view = await buildOwnLeadChecklistView(interaction.guild, leadId);
-        if (view.error) return interaction.update({ content: view.error, embeds: [], components: [] });
-        await interaction.update(view);
-        const state = leadData.completed[index] ? "completed" : "reopened";
-        const log = embed("🛡️ Lead Moderator checklist updated",
-          `<@${interaction.user.id}> ${state} item ${index + 1}: ${MODERATION_LEAD_CHECKLIST[index]}\n\nDaily checklist date: ${data.date}`,
-          leadData.completed[index] ? 0x2ECC71 : 0xE67E22);
-        await sendLog(interaction.guild, config.channels?.moderation, log);
-        await sendLog(interaction.guild, config.channels?.leadership, log);
-        return;
-      }
-
       if (interaction.isChatInputCommand() && interaction.commandName === "my-checklist") {
         if (!isModerator(interaction.member)) {
           return interaction.reply({ content: "⛔ This checklist is only available to members with the Moderators role.", ephemeral: true });
@@ -1011,7 +894,7 @@
           return interaction.reply({ content: "That checklist item is invalid.", ephemeral: true });
         }
         const member = await interaction.guild.members.fetch(moderatorId).catch(() => null);
-        if (!member || !config.roles?.moderator || !member.roles.cache.has(config.roles.moderator)) {
+        if (!member || BLOCKED_STAFF_IDS.has(member.id) || !config.roles?.moderator || !member.roles.cache.has(config.roles.moderator)) {
           return interaction.reply({ content: "That member is no longer assigned the Moderators role.", ephemeral: true });
         }
         const data = readChecklist();
@@ -1157,8 +1040,8 @@
       console.log(`[Staff Monitor] Online as ${ready.user.tag}`);
       try {
         const rest = new REST({ version: "10" }).setToken(TOKEN);
-        await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: [setupCommand.toJSON(), moderationChecklistCommand.toJSON(), myChecklistCommand.toJSON(), leadChecklistCommand.toJSON(), logTaskCommand.toJSON(), supportPanelCommand.toJSON()] });
-        console.log("[Staff Monitor] /setup-staff-monitor, /moderation-checklist, /my-checklist, /lead-checklist, /log-task and /setup-support-panel registered.");
+        await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: [setupCommand.toJSON(), moderationChecklistCommand.toJSON(), myChecklistCommand.toJSON(), logTaskCommand.toJSON(), supportPanelCommand.toJSON()] });
+        console.log("[Staff Monitor] /setup-staff-monitor, /moderation-checklist, /my-checklist, /log-task and /setup-support-panel registered.");
       } catch (error) { console.error("[Staff Monitor] Command registration failed:", error); }
       cron.schedule("0 0 * * *", dailySummary, { timezone: "Europe/London" });
       if (!config.guildId) console.log("[Staff Monitor] Run /setup-staff-monitor in the server.");
