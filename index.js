@@ -41,12 +41,12 @@
     const client = new Client({
       intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers,
         GatewayIntentBits.GuildModeration, GatewayIntentBits.GuildMessages,
-        GatewayIntentBits.MessageContent],
-      partials: [Partials.Message, Partials.Channel, Partials.GuildMember, Partials.User]
+        GatewayIntentBits.GuildMessageReactions, GatewayIntentBits.MessageContent],
+      partials: [Partials.Message, Partials.Channel, Partials.GuildMember, Partials.User, Partials.Reaction]
     });
 
     let config = {};
-    let stats = { day: ukDate(), actions: {} };
+    let stats = { day: ukDate(), actions: {}, moderators: {} };
     let tickets = { nextNumber: 1, records: {} };
 
     function readJson(file, fallback) {
@@ -61,7 +61,9 @@
     function loadData() {
       fs.mkdirSync(DATA_DIR, { recursive: true });
       config = readJson(CONFIG_FILE, {});
-      stats = readJson(STATS_FILE, { day: ukDate(), actions: {} });
+      stats = readJson(STATS_FILE, { day: ukDate(), actions: {}, moderators: {} });
+      if (!stats.moderators) stats.moderators = {};
+      if (!stats.actions) stats.actions = {};
       tickets = readJson(TICKETS_FILE, { nextNumber: 1, records: {} });
     }
     function ukDate() {
@@ -89,6 +91,38 @@
     function isModerator(member) {
       return !!member && !!config.roles?.moderator && member.roles.cache.has(config.roles.moderator);
     }
+    function ensureDailyStats() {
+      const today = ukDate();
+      if (stats.day !== today) stats = { day: today, actions: {}, moderators: {} };
+      if (!stats.actions) stats.actions = {};
+      if (!stats.moderators) stats.moderators = {};
+      return stats;
+    }
+    function moderatorStats(userId) {
+      ensureDailyStats();
+      if (!stats.moderators[userId]) {
+        stats.moderators[userId] = { messages: 0, replies: 0, reactions: 0, channels: {}, actions: {}, tasks: [] };
+      }
+      const record = stats.moderators[userId];
+      record.channels ||= {};
+      record.actions ||= {};
+      record.tasks ||= [];
+      return record;
+    }
+    function trackModeratorActivity(userId, kind, channelId = null, amount = 1) {
+      const record = moderatorStats(userId);
+      if (kind === "message" || kind === "reply" || kind === "reaction") record[kind === "message" ? "messages" : kind === "reply" ? "replies" : "reactions"] += amount;
+      else record.actions[kind] = (record.actions[kind] || 0) + amount;
+      if (channelId) record.channels[channelId] = (record.channels[channelId] || 0) + amount;
+      writeJson(STATS_FILE, stats);
+    }
+    function recordModeratorTask(userId, description, category = "General task") {
+      const record = moderatorStats(userId);
+      record.tasks.push({ description: safe(description, 250), category: safe(category, 60), at: new Date().toISOString() });
+      if (record.tasks.length > 40) record.tasks = record.tasks.slice(-40);
+      record.actions.tasks_completed = (record.actions.tasks_completed || 0) + 1;
+      writeJson(STATS_FILE, stats);
+    }
     async function logAction(guild, title, description, {
       executorId = null, targetId = null, reason = null, extra = null,
       moderatorAction = false, actionKey = "other", color = 0xC9A44C
@@ -103,13 +137,29 @@
       if (moderatorAction) await sendLog(guild, config.channels?.moderation, e);
 
       if (executorId && moderatorAction) {
-        const today = ukDate();
-        if (stats.day !== today) stats = { day: today, actions: {} };
+        ensureDailyStats();
         const key = `${executorId}:${actionKey}`;
         stats.actions[key] = (stats.actions[key] || 0) + 1;
-        writeJson(STATS_FILE, stats);
+        trackModeratorActivity(executorId, actionKey);
       }
     }
+    // Count moderator participation without storing message text or content.
+    client.on(Events.MessageCreate, async message => {
+      if (!message.guild || message.guild.id !== GUILD_ID || message.author?.bot) return;
+      const member = message.member || await message.guild.members.fetch(message.author.id).catch(() => null);
+      if (!isModerator(member)) return;
+      const kind = message.reference ? "reply" : "message";
+      trackModeratorActivity(message.author.id, kind, message.channelId);
+    });
+    client.on(Events.MessageReactionAdd, async (reaction, user) => {
+      if (user?.bot) return;
+      const message = reaction.message;
+      if (!message.guild || message.guild.id !== GUILD_ID) return;
+      const member = await message.guild.members.fetch(user.id).catch(() => null);
+      if (!isModerator(member)) return;
+      trackModeratorActivity(user.id, "reaction", message.channelId);
+    });
+
     function actionName(action, changes = []) {
       const map = new Map([
         [AuditLogEvent.GuildUpdate, "Server settings updated"],
@@ -274,28 +324,17 @@
       .addRoleOption(o => o.setName("moderator").setDescription("Moderator role").setRequired(true));
 
     const MODERATION_CHECKLIST = [
-      "Review all open member reports, tickets and complaints.",
-      {
-        title: "Check Other Blacklist Channels",
-        description: "Check other servers' blacklist/scammer channels and use /add-scammer to add them to the list."
-      },
-      "Monitor public chats for rule-breaking, harassment, scams and disruptive behaviour.",
-      {
-        title: "Be on Standby to Help Our Hosts",
-        description: "Ensure you are available to help any of our hosts if needed."
-      },
-      "Check verification concerns and make sure suspicious accounts are escalated.",
-      "Ensure moderation actions have clear reasons and are recorded in the correct logs.",
-      "Check that moderators are covering their duties and that unattended areas are followed up.",
-      {
-        title: "Escalate Serious Issues",
-        description: "Escalate any serious issues that you can not handle to your moderation lead or to any senior admins."
-      },
-      "Before finishing, review outstanding reports and hand over anything that still needs attention.",
-      {
-        title: "Advertise the Server Daily",
-        description: "Ensure you advertise the server at least once a day. Templates for in-game advertising can be found here: <#1560816351155851344>"
-      }
+      "Actively recruit new members.",
+      "Monitor Discord chats and server activity.",
+      "Enforce server rules fairly.",
+      "Watch for scammers and suspicious activity.",
+      "Assist members with questions and concerns.",
+      "Report conflicts and serious issues to leadership.",
+      "Welcome and assist new members.",
+      "Support and help host parties and events.",
+      "Encourage member participation and engagement.",
+      "Communicate and work together as a team.",
+      "Maintain a positive, safe, and welcoming community."
     ];
 
     function readChecklist() {
@@ -368,7 +407,9 @@
         { name: "Moderator", value: `<@${moderatorId}>`, inline: true },
         { name: "Date (UK)", value: data.date, inline: true },
         { name: "Progress", value: `${completedCount}/${MODERATION_CHECKLIST.length} completed`, inline: true },
-        { name: "Reminder", value: "Only tick a task once it has genuinely been completed. Escalate serious issues to senior leadership." }
+        { name: "Expectations", value: "Be active, dependable, approachable and proactive. Take initiative and contribute to the success of The Outcasts." },
+        { name: "Team motto", value: "🖤 ONE TEAM. SHARED RESPONSIBILITY. STRONGER OUTCASTS!" },
+        { name: "Reminder", value: "Only tick a responsibility once you have genuinely completed it." }
       );
       return message;
     }
@@ -406,10 +447,45 @@
       };
     }
 
+    async function buildOwnModeratorChecklistView(guild, moderatorId) {
+      const member = await guild.members.fetch(moderatorId).catch(() => null);
+      if (!member || !isModerator(member)) {
+        return { error: "You must currently have the Moderators role to use this checklist." };
+      }
+      const checklist = readChecklist();
+      checklist.moderators[moderatorId] = checklist.moderators[moderatorId] || { completed: {}, completedBy: {} };
+      saveChecklist(checklist);
+      const memberData = checklist.moderators[moderatorId];
+      return {
+        content: "🛡️ This is your personal daily checklist. Only you can tick or untick your items.",
+        embeds: [buildChecklistMessage({ ...memberData, date: checklist.date }, moderatorId, member.displayName)],
+        components: buildChecklistRows(memberData, moderatorId)
+      };
+    }
+
     const moderationChecklistCommand = new SlashCommandBuilder()
       .setName("moderation-checklist")
       .setDescription("Open the daily checklist for the Moderation team.")
       .setDefaultMemberPermissions(null);
+
+    const myChecklistCommand = new SlashCommandBuilder()
+      .setName("my-checklist")
+      .setDescription("Open your own private daily moderator checklist.")
+      .setDefaultMemberPermissions(null);
+
+    const logTaskCommand = new SlashCommandBuilder()
+      .setName("log-task")
+      .setDescription("Record a task you completed for The Outcasts today.")
+      .addStringOption(o => o.setName("task").setDescription("What did you complete?").setRequired(true).setMaxLength(250))
+      .addStringOption(o => o.setName("category").setDescription("Type of task").setRequired(true)
+        .addChoices(
+          { name: "Member support", value: "Member support" },
+          { name: "Recruitment / advertising", value: "Recruitment / advertising" },
+          { name: "Moderation / safety", value: "Moderation / safety" },
+          { name: "Party / event support", value: "Party / event support" },
+          { name: "Server organisation", value: "Server organisation" },
+          { name: "Other", value: "Other" }
+        ));
 
     const supportPanelCommand = new SlashCommandBuilder()
       .setName("setup-support-panel")
@@ -557,6 +633,19 @@
     client.on(Events.InteractionCreate, async interaction => {
       if (!interaction.inGuild() || interaction.guildId !== GUILD_ID) return;
 
+      if (interaction.isChatInputCommand() && interaction.commandName === "log-task") {
+        if (!isModerator(interaction.member)) {
+          return interaction.reply({ content: "⛔ This command is available to members with the Moderators role only.", ephemeral: true });
+        }
+        const task = interaction.options.getString("task", true).trim();
+        const category = interaction.options.getString("category", true);
+        recordModeratorTask(interaction.user.id, task, category);
+        const log = embed("📝 Moderator task recorded", `<@${interaction.user.id}> recorded a completed task.\n**Category:** ${safe(category, 60)}\n**Task:** ${safe(task, 250)}`, 0x2ECC71);
+        await sendLog(interaction.guild, config.channels?.moderation, log);
+        await sendLog(interaction.guild, config.channels?.leadership, log);
+        return interaction.reply({ content: "✅ Your task has been added to today's staff activity report.", ephemeral: true });
+      }
+
       if (interaction.isChatInputCommand() && interaction.commandName === "setup-support-panel") {
         if (!canConfigureStaffMonitor(interaction)) return interaction.reply({ content: "⛔ Only owners and senior leadership can set up the support panel.", ephemeral: true });
         const channel = interaction.options.getChannel("channel", true);
@@ -619,6 +708,10 @@
         if (action === "claim") {
           if (record.status !== "open") return interaction.reply({ content: "This ticket is not open.", ephemeral: true });
           record.claimedBy = interaction.user.id; saveTickets();
+          if (isModerator(interaction.member)) {
+            trackModeratorActivity(interaction.user.id, "tickets_claimed");
+            recordModeratorTask(interaction.user.id, `Claimed support ticket #${record.number}`, "Member support");
+          }
           await interaction.channel.send({ embeds: [embed("🙋 Ticket claimed", `This ticket is being handled by <@${interaction.user.id}>.`, 0x3498DB)] });
           return interaction.reply({ content: "✅ You have claimed this ticket.", ephemeral: true });
         }
@@ -694,6 +787,10 @@
             record.closedAt = new Date().toISOString();
             record.closedBy = interaction.user.id;
             saveTickets();
+            if (isModerator(interaction.member)) {
+              trackModeratorActivity(interaction.user.id, "tickets_closed");
+              recordModeratorTask(interaction.user.id, `Closed support ticket #${record.number}`, "Member support");
+            }
 
             if (!transcriptLogged) {
               // Keep the channel available for staff if the transcript was not safely archived.
@@ -738,6 +835,15 @@
         }
       }
 
+      if (interaction.isChatInputCommand() && interaction.commandName === "my-checklist") {
+        if (!isModerator(interaction.member)) {
+          return interaction.reply({ content: "⛔ This checklist is only available to members with the Moderators role.", ephemeral: true });
+        }
+        const view = await buildOwnModeratorChecklistView(interaction.guild, interaction.user.id);
+        if (view.error) return interaction.reply({ content: view.error, ephemeral: true });
+        return interaction.reply({ ...view, ephemeral: true });
+      }
+
       if (interaction.isChatInputCommand() && interaction.commandName === "moderation-checklist") {
         if (!canUseModerationChecklist(interaction)) {
           return interaction.reply({
@@ -768,10 +874,12 @@
       }
 
       if (interaction.isButton() && interaction.customId.startsWith("modcheck:")) {
-        if (!canUseModerationChecklist(interaction)) {
-          return interaction.reply({ content: "⛔ You cannot update this moderation checklist.", ephemeral: true });
-        }
         const [, moderatorId, indexText] = interaction.customId.split(":");
+        const isLeadership = canUseModerationChecklist(interaction);
+        const isOwnModeratorChecklist = isModerator(interaction.member) && moderatorId === interaction.user.id;
+        if (!isLeadership && !isOwnModeratorChecklist) {
+          return interaction.reply({ content: "⛔ You can only update your own moderator checklist.", ephemeral: true });
+        }
         const index = Number(indexText);
         if (!moderatorId || !Number.isInteger(index) || index < 0 || index >= MODERATION_CHECKLIST.length) {
           return interaction.reply({ content: "That checklist item is invalid.", ephemeral: true });
@@ -789,7 +897,12 @@
         if (moderatorData.completed[index]) moderatorData.completedBy[index] = interaction.user.id;
         else delete moderatorData.completedBy[index];
         saveChecklist(data);
-        const view = await buildModeratorChecklistView(interaction.guild, moderatorId);
+        if (moderatorData.completed[index] && interaction.user.id === moderatorId) {
+          recordModeratorTask(moderatorId, `Completed checklist item: ${checklistItemText(MODERATION_CHECKLIST[index]).replace(/\*\*/g, "")}`, "Daily checklist");
+        }
+        const view = isOwnModeratorChecklist && !isLeadership
+          ? await buildOwnModeratorChecklistView(interaction.guild, moderatorId)
+          : await buildModeratorChecklistView(interaction.guild, moderatorId);
         if (view.error) return interaction.update({ content: view.error, embeds: [], components: [] });
         await interaction.update(view);
         const state = moderatorData.completed[index] ? "completed" : "reopened";
@@ -861,16 +974,56 @@
       if (!config.guildId || !config.channels?.moderation) return;
       const guild = await client.guilds.fetch(config.guildId).catch(() => null);
       if (!guild) return;
-      const lines = Object.entries(stats.actions || {}).map(([key, count]) => {
+      // Do not roll the date forward here: this job runs at midnight and must
+      // report the day that has just ended before the next activity resets it.
+      const reportLines = [];
+      for (const [userId, record] of Object.entries(stats.moderators || {})) {
+        const channelCount = Object.keys(record.channels || {}).length;
+        const actionLines = Object.entries(record.actions || {})
+          .filter(([key, count]) => count && key !== "tasks_completed")
+          .map(([key, count]) => `${key.replace(/_/g, " ")}: ${count}`);
+        const taskLines = (record.tasks || []).slice(-12).map(task => `• [${task.category}] ${task.description}`);
+        reportLines.push(
+          `**<@${userId}>**\n` +
+          `💬 Messages: **${record.messages || 0}** | Replies: **${record.replies || 0}** | Reactions: **${record.reactions || 0}**\n` +
+          `📍 Channels active in: **${channelCount}** | Recorded actions: **${actionLines.length ? actionLines.join(", ") : "None"}**\n` +
+          `✅ Tasks completed: **${(record.tasks || []).length}**\n` +
+          (taskLines.length ? taskLines.join("\n") : "• No individually recorded tasks")
+        );
+      }
+      const auditLines = Object.entries(stats.actions || {}).map(([key, count]) => {
         const [userId, kind] = key.split(":");
-        return `<@${userId}> — **${count}** ${kind.replace(/_/g, " ")} action(s)`;
+        return `<@${userId}> — **${count}** ${kind.replace(/_/g, " ")} audit action(s)`;
       });
-      const summary = embed("📊 Daily Moderator Activity Summary",
-        lines.length ? lines.join("\n") : "No moderator-role audit actions were recorded today.", 0x5865F2);
-      summary.addFields({ name: "Date", value: stats.day || "Today" });
-      await sendLog(guild, config.channels.moderation, summary);
-      await sendLog(guild, config.channels.leadership, summary);
-      stats = { day: ukDate(), actions: {} };
+      const dateLabel = stats.day || ukDate();
+      const batches = [];
+      let current = [];
+      let currentLength = 0;
+      for (const line of reportLines) {
+        const length = line.length + 24;
+        if (current.length && currentLength + length > 3300) {
+          batches.push(current.join("\n\n━━━━━━━━━━━━━━━━━━━━\n\n"));
+          current = [];
+          currentLength = 0;
+        }
+        current.push(line);
+        currentLength += length;
+      }
+      if (current.length) batches.push(current.join("\n\n━━━━━━━━━━━━━━━━━━━━\n\n"));
+      if (!batches.length) batches.push("No moderator activity was recorded today.");
+      const auditText = auditLines.length ? auditLines.join("\n") : "None";
+      for (let i = 0; i < batches.length; i++) {
+        const summary = embed(`📊 Daily Moderator Activity & Performance Report${batches.length > 1 ? ` (${i + 1}/${batches.length})` : ""}`,
+          batches[i], 0x5865F2);
+        summary.addFields(
+          { name: "Date (UK)", value: dateLabel, inline: true },
+          { name: "Moderators recorded", value: String(Object.keys(stats.moderators || {}).length), inline: true },
+          { name: "Audit-log actions", value: safe(auditText, 1024), inline: false }
+        );
+        await sendLog(guild, config.channels.moderation, summary);
+        await sendLog(guild, config.channels.leadership, summary);
+      }
+      stats = { day: ukDate(), actions: {}, moderators: {} };
       writeJson(STATS_FILE, stats);
     }
 
@@ -878,8 +1031,8 @@
       console.log(`[Staff Monitor] Online as ${ready.user.tag}`);
       try {
         const rest = new REST({ version: "10" }).setToken(TOKEN);
-        await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: [setupCommand.toJSON(), moderationChecklistCommand.toJSON(), supportPanelCommand.toJSON()] });
-        console.log("[Staff Monitor] /setup-staff-monitor, /moderation-checklist and /setup-support-panel registered.");
+        await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: [setupCommand.toJSON(), moderationChecklistCommand.toJSON(), myChecklistCommand.toJSON(), logTaskCommand.toJSON(), supportPanelCommand.toJSON()] });
+        console.log("[Staff Monitor] /setup-staff-monitor, /moderation-checklist, /my-checklist, /log-task and /setup-support-panel registered.");
       } catch (error) { console.error("[Staff Monitor] Command registration failed:", error); }
       cron.schedule("0 0 * * *", dailySummary, { timezone: "Europe/London" });
       if (!config.guildId) console.log("[Staff Monitor] Run /setup-staff-monitor in the server.");
