@@ -306,12 +306,6 @@
       if (member.guild.id !== GUILD_ID || member.user.bot) return;
       await logAction(member.guild, "📥 Member joined", `${member.user.tag} joined the server.`, { targetId: member.id });
     });
-    client.on(Events.GuildMemberRemove, async member => {
-      if (member.guild.id !== GUILD_ID || member.user.bot) return;
-      await logAction(member.guild, "📤 Member left",
-        `${member.user.tag} left the server. A matching audit entry may identify a kick or ban.`,
-        { targetId: member.id });
-    });
     // Role and nickname changes are logged once via GuildAuditLogEntryCreate above.
 
     const setupCommand = new SlashCommandBuilder()
