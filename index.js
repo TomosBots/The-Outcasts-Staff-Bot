@@ -854,9 +854,17 @@
       }
 
       if (interaction.isChatInputCommand() && interaction.commandName === "moderation-checklist") {
+        // Moderators can open and update their own personal daily checklist.
+        // Leadership retains the dropdown view for reviewing every moderator.
+        if (isModerator(interaction.member)) {
+          const view = await buildOwnModeratorChecklistView(interaction.guild, interaction.user.id);
+          if (view.error) return interaction.reply({ content: view.error, ephemeral: true });
+          return interaction.reply({ ...view, ephemeral: true });
+        }
+
         if (!canUseModerationChecklist(interaction)) {
           return interaction.reply({
-            content: "⛔ This checklist is for the Moderation Lead and senior leadership only.",
+            content: "⛔ This checklist is available to Moderators for their own checklist, and to the Moderation Lead and senior leadership for team reviews.",
             ephemeral: true
           });
         }
