@@ -906,8 +906,8 @@
           return interaction.reply({ content: "That checklist item is invalid.", ephemeral: true });
         }
         const member = await interaction.guild.members.fetch(moderatorId).catch(() => null);
-        if (!member || BLOCKED_STAFF_IDS.has(member.id) || !config.roles?.moderator || !member.roles.cache.has(config.roles.moderator)) {
-          return interaction.reply({ content: "That member is no longer assigned the Moderators role.", ephemeral: true });
+        if (!member || BLOCKED_STAFF_IDS.has(member.id) || !isModerator(member)) {
+          return interaction.reply({ content: "That member is no longer assigned the Moderators or Trial Moderators role.", ephemeral: true });
         }
         const data = readChecklist();
         data.moderators[moderatorId] = data.moderators[moderatorId] || { completed: {}, completedBy: {} };
