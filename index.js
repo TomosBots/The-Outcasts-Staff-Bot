@@ -20,6 +20,7 @@
     ];
     const BLOCKED_STAFF_IDS = new Set(["1547717354111242291", "1215374564457062415"]);
     const STAFF_MONITOR_SETUP_ROLE_NAMES = ["Head Admin", "Senior Admins"];
+    const TRIAL_MODERATOR_ROLE_ID = "1574576294488838296";
 
     function canConfigureStaffMonitor(interaction) {
       if (BLOCKED_STAFF_IDS.has(interaction.user.id)) return false;
@@ -91,7 +92,12 @@
       }
     }
     function isModerator(member) {
-      return !!member && !BLOCKED_STAFF_IDS.has(member.id) && !!config.roles?.moderator && member.roles.cache.has(config.roles.moderator);
+      return !!member &&
+        !BLOCKED_STAFF_IDS.has(member.id) &&
+        (
+          (!!config.roles?.moderator && member.roles.cache.has(config.roles.moderator)) ||
+          member.roles.cache.has(TRIAL_MODERATOR_ROLE_ID)
+        );
     }
     function ensureDailyStats() {
       const today = ukDate();
@@ -350,7 +356,11 @@
       if (!roleId) return [];
       await guild.members.fetch();
       return [...guild.members.cache.values()]
-        .filter(member => !member.user.bot && !BLOCKED_STAFF_IDS.has(member.id) && member.roles.cache.has(roleId))
+        .filter(member =>
+          !member.user.bot &&
+          !BLOCKED_STAFF_IDS.has(member.id) &&
+          (member.roles.cache.has(roleId) || member.roles.cache.has(TRIAL_MODERATOR_ROLE_ID))
+        )
         .sort((a, b) => a.displayName.localeCompare(b.displayName));
     }
 
@@ -428,8 +438,8 @@
 
     async function buildModeratorChecklistView(guild, moderatorId) {
       const member = await guild.members.fetch(moderatorId).catch(() => null);
-      if (!member || BLOCKED_STAFF_IDS.has(member.id) || !config.roles?.moderator || !member.roles.cache.has(config.roles.moderator)) {
-        return { error: "That member is no longer assigned the Moderators role." };
+      if (!member || !isModerator(member)) {
+        return { error: "That member is no longer assigned the Moderators or Trial Moderators role." };
       }
       const checklist = readChecklist();
       checklist.moderators[moderatorId] = checklist.moderators[moderatorId] || { completed: {}, completedBy: {} };
@@ -491,7 +501,7 @@
 
     function supportStaffIds(type) {
       const leadership = [config.roles?.headAdmin, config.roles?.seniorAdmin].filter(Boolean);
-      const moderators = [config.roles?.moderationLead, config.roles?.moderator].filter(Boolean);
+      const moderators = [config.roles?.moderationLead, config.roles?.moderator, TRIAL_MODERATOR_ROLE_ID].filter(Boolean);
       // Staff complaints are deliberately restricted to owners and senior leadership.
       return type === "staff_complaint" ? [...leadership] : [...leadership, ...moderators];
     }
